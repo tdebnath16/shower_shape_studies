@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 # Filepath to the list of .root files
-filelist_path = "filelist.txt"
+filelist_path = "filelist_photon200PU.txt"
 
 # Function to load and filter the tree data
 def load_and_filter_tree(tree):
@@ -13,8 +13,11 @@ def load_and_filter_tree(tree):
         filter_name=["gen_n", "gen_eta", "gen_phi", "gen_pt", 
                      "genpart_exeta", "genpart_exphi", "*cl3d*", "event"]
     ))
-    df_filtered = df[(np.abs(df['cl3d_eta']) > 1.6) & 
+    df_filtered = df[(np.abs(df['genpart_exeta']) > 1.6) & 
+                     (np.abs(df['genpart_exeta']) < 2.8) &
+                     (np.abs(df['cl3d_eta']) > 1.6) & 
                      (np.abs(df['cl3d_eta']) < 2.8) &
+                     (df['gen_pt'] > 20) &
                      (df['cl3d_pt'] > 5)]
     return df_filtered
 
@@ -52,7 +55,7 @@ def process_files(filelist_path, bg_folder, tree_name, output_file):
 # Set the paths
 bg_folder = "l1tHGCalTriggerNtuplizer"
 tree_name = "HGCalTriggerNtuple"
-output_file = "/grid_mnt/data__data.polcms/cms/debnath/CMSSW_14_0_0_pre1/src/shower_shape_studies/combined_data.h5"  # Output single .h5 file
+output_file = "/grid_mnt/data__data.polcms/cms/debnath/CMSSW_14_0_0_pre1/src/shower_shape_studies/doublePhoton_200PU.h5"  # Output single .h5 file
 
 # Process the files listed in filelist.txt and save everything into one .h5 file
 process_files(filelist_path, bg_folder, tree_name, output_file)
