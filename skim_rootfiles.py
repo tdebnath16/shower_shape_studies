@@ -1,47 +1,58 @@
 import uproot
 import awkward as ak
 import pandas as pd
+import numpy as np
 
-# File paths for signal and background files
-bg_file_path = "/grid_mnt/data__data.polcms/cms/debnath/CMSSW_14_0_0_pre1/src/neutrino_bg.h5"  # Background data (already filtered)
-bg_file = pd.read_hdf(bg_file_path)  # Background data (already filtered)
-bg_folder = "l1tHGCalTriggerNtuplizer"  # This won't be used since we already have the background data in the form of a DataFrame
+# Filepath to the list of .root files
+filelist_path = "filelist.txt"
 
-# Tree name to access within each file
-tree_name = "HGCalTriggerNtuple"
-
-# Build paths to the trees for ROOT file
-signal_tree_path = f"{signal_folder}/{tree_name}"
-
-# Access the signal tree in ROOT (uproot)
-signal_tree = signal_file[signal_tree_path]
-
-# Function to load and filter the signal tree data (for ROOT file)
-def load_and_filter_signal_tree(tree, filter_pt, eta_range=(1.6, 2.8), cl_pt_threshold=5):
+# Function to load and filter the tree data
+def load_and_filter_tree(tree):
     df = ak.to_dataframe(tree.arrays(
         library="ak",
         filter_name=["gen_n", "gen_eta", "gen_phi", "gen_pt", 
                      "genpart_exeta", "genpart_exphi", "*cl3d*", "event"]
     ))
-    df_filtered = df[(df['gen_pt'] > filter_pt) & 
-                     (df['gen_eta'] > eta_range[0]) & 
-                     (df['gen_eta'] < eta_range[1]) &
-                     (df['cl3d_eta'] > eta_range[0]) & 
-                     (df['cl3d_eta'] < eta_range[1]) &
-                     (df['cl3d_pt'] > cl_pt_threshold)]
+    df_filtered = df[(np.abs(df['cl3d_eta']) > 1.6) & 
+                     (np.abs(df['cl3d_eta']) < 2.8) &
+                     (df['cl3d_pt'] > 5)]
     return df_filtered
 
-# Apply the filter to the signal data (only signal data needs filtering)
-signal_df_filtered = load_and_filter_signal_tree(signal_tree, filter_pt=20)
+# Function to process the files and save as a single .h5 file
+def process_files(filelist_path, bg_folder, tree_name, output_file):
+    # Initialize an empty list to accumulate all filtered data
+    all_filtered_data = []
 
-# Since the background data is already filtered, no additional filtering is needed for it.
-bg_df_filtered = bg_file  # Assuming the background DataFrame is already filtered
+    # Read the file list
+    with open(filelist_path, "r") as f:
+        file_list = f.readlines()
 
-# Concatenate signal and background data into one DataFrame
-filtered_data = pd.concat([signal_df_filtered, bg_df_filtered])
+    for file_path in file_list:
+        file_path = file_path.strip()  # Clean up any whitespace/newlines
 
-# Save the filtered data to a .h5 file
-output_file = "combined_filtered_data.h5"
-filtered_data.to_hdf(output_file, key='data', mode='w')
+        # Open the ROOT file
+        root_file = uproot.open(file_path)
+        bg_tree_path = f"{bg_folder}/{tree_name}"
+        bg_tree = root_file[bg_tree_path]
+        bg_df_filtered = load_and_filter_tree(bg_tree)
 
-print(f"Filtered data saved to {output_file}")
+        # Add the filtered data to the accumulated list
+        all_filtered_data.append(bg_df_filtered)
+
+        print(f"Processed {file_path}")
+
+    # Concatenate all the filtered dataframes into a single dataframe
+    final_df = pd.concat(all_filtered_data, ignore_index=True)
+
+    # Save the combined DataFrame to a single .h5 file
+    final_df.to_hdf(output_file, key='data', mode='w')
+
+    print(f"All data saved to {output_file}")
+
+# Set the paths
+bg_folder = "l1tHGCalTriggerNtuplizer"
+tree_name = "HGCalTriggerNtuple"
+output_file = "/grid_mnt/data__data.polcms/cms/debnath/CMSSW_14_0_0_pre1/src/shower_shape_studies/combined_data.h5"  # Output single .h5 file
+
+# Process the files listed in filelist.txt and save everything into one .h5 file
+process_files(filelist_path, bg_folder, tree_name, output_file)
