@@ -1,61 +1,85 @@
 import uproot
 import awkward as ak
 import pandas as pd
-import numpy as np
+from multiprocessing import Pool
 
-# Filepath to the list of .root files
-filelist_path = "filelist_photon200PU.txt"
-
-# Function to load and filter the tree data
-def load_and_filter_tree(tree):
-    df = ak.to_dataframe(tree.arrays(
+# Function to load and filter signal tree
+def load_and_filter_signal_tree(tree, filter_pt=20, eta_range=(1.6, 2.8), cl_pt_threshold=5):
+    # Load gen variables
+    df_gen = ak.to_dataframe(tree.arrays(
         library="ak",
         filter_name=["gen_n", "gen_eta", "gen_phi", "gen_pt", 
-                     "genpart_exeta", "genpart_exphi", "*cl3d*", "event"]
+                     "genpart_exeta", "genpart_exphi", "event"]
     ))
-    df_filtered = df[(np.abs(df['genpart_exeta']) > 1.6) & 
-                     (np.abs(df['genpart_exeta']) < 2.8) &
-                     (np.abs(df['cl3d_eta']) > 1.6) & 
-                     (np.abs(df['cl3d_eta']) < 2.8) &
-                     (df['gen_pt'] > 20) &
-                     (df['cl3d_pt'] > 5)]
-    return df_filtered
+    # Load cl3d variables
+    df_cl3d = ak.to_dataframe(tree.arrays(
+        library="ak",
+        filter_name=["*cl3d*", "event"]
+    ))
+    # Apply filters to gen DataFrame
+    df_gen_filtered = df_gen[(df_gen['gen_pt'] > filter_pt) & 
+                              (abs(df_gen['gen_eta']) > eta_range[0]) & 
+                              (abs(df_gen['gen_eta']) < eta_range[1])]
+    # Apply filters to cl3d DataFrame
+    df_cl3d_filtered = df_cl3d[(abs(df_cl3d['cl3d_eta']) > eta_range[0]) & 
+                                (abs(df_cl3d['cl3d_eta']) < eta_range[1]) &
+                                (df_cl3d['cl3d_pt'] > cl_pt_threshold)]
+    return df_gen_filtered, df_cl3d_filtered
 
-# Function to process the files and save as a single .h5 file
-def process_files(filelist_path, bg_folder, tree_name, output_file):
-    # Initialize an empty list to accumulate all filtered data
-    all_filtered_data = []
+# Worker function for multiprocessing
+def process_file(file_info):
+    try:
+        file_path, bg_folder, tree_name = file_info
+        root_file = uproot.open(file_path)
+        tree = root_file[f"{bg_folder}/{tree_name}"]
+
+        # Load and filter gen and cl3d objects
+        df_gen, df_cl3d = load_and_filter_signal_tree(tree)
+
+        print(f"Processed {file_path}")
+        return df_gen, df_cl3d
+
+    except Exception as e:
+        print(f"Error processing file {file_info[0]}: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+# Function to process files in parallel
+def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, num_processes=20):
+    # Ensure output directory exists
+    import os
+    os.makedirs(output_dir, exist_ok=True)
 
     # Read the file list
     with open(filelist_path, "r") as f:
-        file_list = f.readlines()
+        file_list = [line.strip() for line in f.readlines()]
 
-    for file_path in file_list:
-        file_path = file_path.strip()  # Clean up any whitespace/newlines
+    # Prepare file info tuples for multiprocessing
+    file_info_list = [(file_path, bg_folder, tree_name) for file_path in file_list]
 
-        # Open the ROOT file
-        root_file = uproot.open(file_path)
-        bg_tree_path = f"{bg_folder}/{tree_name}"
-        bg_tree = root_file[bg_tree_path]
-        bg_df_filtered = load_and_filter_tree(bg_tree)
+    # Use multiprocessing Pool for parallel processing
+    with Pool(processes=num_processes) as pool:
+        results = pool.map(process_file, file_info_list)
 
-        # Add the filtered data to the accumulated list
-        all_filtered_data.append(bg_df_filtered)
+    # Separate gen and cl3d DataFrames from results
+    gen_dfs, cl3d_dfs = zip(*results)
 
-        print(f"Processed {file_path}")
+    # Combine all the DataFrames into single ones
+    combined_gen_df = pd.concat(gen_dfs, ignore_index=True)
+    combined_cl3d_df = pd.concat(cl3d_dfs, ignore_index=True)
 
-    # Concatenate all the filtered dataframes into a single dataframe
-    final_df = pd.concat(all_filtered_data, ignore_index=True)
+    # Save the combined DataFrames to output files
+    gen_output_path = f"{output_dir}/gen_filtered.h5"
+    cl3d_output_path = f"{output_dir}/cl3d_filtered.h5"
+    combined_gen_df.to_hdf(gen_output_path, key="gen", mode="w")
+    combined_cl3d_df.to_hdf(cl3d_output_path, key="cl3d", mode="w")
 
-    # Save the combined DataFrame to a single .h5 file
-    final_df.to_hdf(output_file, key='data', mode='w')
-
-    print(f"All data saved to {output_file}")
+    print(f"Gen data saved to {gen_output_path}")
+    print(f"CL3D data saved to {cl3d_output_path}")
 
 # Set the paths
 bg_folder = "l1tHGCalTriggerNtuplizer"
 tree_name = "HGCalTriggerNtuple"
-output_file = "/grid_mnt/data__data.polcms/cms/debnath/CMSSW_14_0_0_pre1/src/shower_shape_studies/doublePhoton_200PU.h5"  # Output single .h5 file
+output_dir = "/grid_mnt/data__data.polcms/cms/debnath/CMSSW_14_0_0_pre1/src/shower_shape_studies"
 
-# Process the files listed in filelist.txt and save everything into one .h5 file
-process_files(filelist_path, bg_folder, tree_name, output_file)
+# Process the files in parallel (using 20 processes)
+process_files_parallel("filelist_photon200PU.txt", bg_folder, tree_name, output_dir, num_processes=20)
