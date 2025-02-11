@@ -1,3 +1,4 @@
 *.png
 *.root
 *.h5
+*checkpoint.ipynb
