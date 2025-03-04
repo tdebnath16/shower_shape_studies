@@ -1,4 +1,8 @@
 *.png
 *.root
 *.h5
+*.tcl
+*.cpp
+*.h
+*.json
 *checkpoint.ipynb
