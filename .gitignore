@@ -6,3 +6,6 @@
 *.h
 *.json
 *checkpoint.ipynb
+*.log
+*.out
+*.err
