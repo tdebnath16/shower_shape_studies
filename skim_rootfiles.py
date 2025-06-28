@@ -4,7 +4,7 @@ import pandas as pd
 from multiprocessing import Pool
 
 # Function to load and filter signal tree
-def load_and_filter_signal_tree(tree, filter_pt=5, eta_range=(1.6, 2.8), cl_pt_threshold=5):
+def load_and_filter_signal_tree(tree, filter_pt=5, eta_range=(1.6, 2.8), cl_pt_threshold=20):
     # Load gen variables
     df_gen = ak.to_dataframe(tree.arrays(
         library="ak",
@@ -17,7 +17,8 @@ def load_and_filter_signal_tree(tree, filter_pt=5, eta_range=(1.6, 2.8), cl_pt_t
         filter_name=["*cl3d*", "event"]
     ))
     # Apply filters to gen DataFrame
-    df_gen_filtered = df_gen[(df_gen['gen_pt'] > filter_pt) & 
+    df_gen_filtered = df_gen[(df_gen['gen_pt'] > filter_pt) &
+                              df_gen['gen_status'] == 1 & 
                               (abs(df_gen['gen_eta']) > eta_range[0]) & 
                               (abs(df_gen['gen_eta']) < eta_range[1])]
     # Apply filters to cl3d DataFrame
@@ -68,8 +69,8 @@ def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, num_
     combined_cl3d_df = pd.concat(cl3d_dfs, ignore_index=True)
 
     # Save the combined DataFrames to output files
-    gen_output_path = f"{output_dir}/testQCD300toInfgen_filtered.h5"
-    cl3d_output_path = f"{output_dir}/testQCD300toInfcl3d_filtered.h5"
+    gen_output_path = f"{output_dir}/testQCD20to30gen_filtered.h5"
+    cl3d_output_path = f"{output_dir}/testQCD20to30cl3d_filtered.h5"
     combined_gen_df.to_hdf(gen_output_path, key="gen", mode="w")
     combined_cl3d_df.to_hdf(cl3d_output_path, key="cl3d", mode="w")
 
@@ -82,4 +83,4 @@ tree_name = "HGCalTriggerNtuple"
 output_dir = "/data/data.polcms/cms/debnath/HGCAL/CMSSW_14_0_5/src/shower_shape_studies/samples"
 
 # Process the files in parallel (using 20 processes)
-process_files_parallel("filelists/filelistQCD_EMenriched_pT300toInf.txt", bg_folder, tree_name, output_dir, num_processes=20)
+process_files_parallel("filelists/filelistQCD_EMenriched_pT20to30.txt", bg_folder, tree_name, output_dir, num_processes=20)
