@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import uproot
 import awkward as ak
 import seaborn as sns
 import os
@@ -10,7 +9,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve, auc
 from sklearn.preprocessing import label_binarize
 from sklearn.utils.class_weight import compute_sample_weight
-import shap
+import conifer
+import shutil
 import datetime
 from sklearn.datasets import make_hastie_10_2
 import logging
@@ -208,3 +208,85 @@ def plot_qcd_histograms(df_signal, df_bg1, df_bg2, df_bg3, variables,num_bins=40
         print(f"Saved: {filename}")
         plt.show()
         plt.close()
+
+def quantize(feat, nbits, method, fmin, fmax):
+    nbins = 2 ** nbits
+    if method == 'uniform':
+        bins = np.linspace(fmin, fmax, nbins + 1)
+    elif method == 'percentile':
+        bins = [np.percentile(feat, p) for p in np.linspace(0, 100, nbins + 1)]
+    else:
+        raise ValueError("Unsupported quantization method")
+    return np.digitize(feat, bins, right=True)
+
+def remove_folder(path):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+
+def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_train, X_test, y_test):
+    timer = time.time()
+    print(f"[{iteration}] Training model: precision={precision}, depth={depth}, rounds={rounds}")
+
+    # Step 1: Quantization
+    qtrain = pd.DataFrame()
+    qtest = pd.DataFrame()
+    for feat in X_train.columns:
+        fmin, fmax = X_train[feat].min(), X_train[feat].max()
+        qtrain[feat] = quantize(X_train[feat], precision, 'uniform', fmin, fmax)
+        qtest[feat] = quantize(X_test[feat], precision, 'uniform', fmin, fmax)
+
+    # Step 2: Normalize
+    max_range = 1 - 1 / (2 ** precision)
+    scaler = MinMaxScaler(feature_range=(0, max_range))
+    qtrain_scaled = pd.DataFrame(scaler.fit_transform(qtrain), columns=X_train.columns)
+    qtest_scaled = pd.DataFrame(scaler.transform(qtest), columns=X_test.columns)
+
+    # Step 3: XGBoost Training
+    model = xgb.XGBClassifier(
+        objective='multi:softprob',
+        num_class=4,
+        max_depth=depth,
+        n_estimators=rounds,
+        learning_rate=0.05,
+        eval_metric='mlogloss',
+        use_label_encoder=False,
+        n_jobs=8,
+        verbosity=0
+    )
+    model.fit(qtrain_scaled, y_train)
+
+    pred_probs = model.predict_proba(qtest_scaled)
+    y_pred = np.argmax(pred_probs, axis=1)
+
+    acc = (y_pred == y_test).sum() / len(y_test)
+    macro_auc = roc_auc_score(y_test, pred_probs, multi_class='ovo')
+
+    # Step 4: Conifer Config
+    cfg = conifer.backends.vhdl.auto_config()
+    path = f"hdlprojects/prj_vhdl_multiclass_{precision}_{depth}_{rounds}_{iteration}"
+    if os.path.exists(path):
+        remove_folder(path)
+    cfg['OutputDir'] = path
+    cfg['XilinxPart'] = 'xcvu13p-fhgb2104-2L-e'
+    cfg['Precision'] = f"ap_fixed<{precision},0>"
+    cfg['ClockPeriod'] = 3
+    cfg['ProjectName'] = 'hgcal_multiclass'
+
+    # Step 5: Conifer Conversion & Synthesis
+    cnf_model = conifer.model(model.get_booster(), conifer.converters.xgboost,
+                              conifer.backends.vhdl, cfg)
+    cnf_model.compile()
+    y_hdl = expit(cnf_model.decision_function(qtest_scaled))
+    cnf_model.build(csim=True)
+
+    # LUT Extraction
+    report_path = os.path.join(cfg['OutputDir'], 'util.rpt')
+    with open(report_path, 'r') as f:
+        lines = f.readlines()
+        LUT = int(lines[37].split('|')[2])
+
+    duration = time.time() - timer
+    print(f"Finished Iter {iteration}: Accuracy={acc:.4f}, AUC={macro_auc:.4f}, LUT={LUT}, Time={duration:.2f}s")
+
+    os.chdir(base_dir)
+    return (precision, depth, rounds, acc, macro_auc, LUT)
