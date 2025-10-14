@@ -17,21 +17,21 @@ import logging
 import sys
 
 def delta_r(eta1, phi1, eta2, phi2):
-    delta_eta = eta1 - eta2
+    delta_eta = np.abs(eta1 - eta2)
     delta_phi = np.abs(phi1 - phi2)
     delta_phi = np.where(delta_phi > np.pi, 2 * np.pi - delta_phi, delta_phi)  # Adjust phi to be within [-pi, pi]
     return np.sqrt(delta_eta**2 + delta_phi**2)
 
-def filter_by_delta_r(df, delta_r_threshold=0.05):
+def filter_by_delta_r(df, prefix, delta_r_threshold):
     """Filter DataFrame to keep only the highest-energy match per event within the delta R threshold."""
-    required_columns = ['cl3d_eta', 'cl3d_phi', 'genpart_exeta', 'genpart_exphi', 'cl3d_energy', 'event']
+    required_columns = [f"{prefix}_eta", f"{prefix}_phi", 'genpart_exeta', 'genpart_exphi', f"{prefix}_energy", 'event']
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"DataFrame must contain the following columns: {required_columns}")
     df = df.copy()
-    df = df[df['cl3d_ienergy'] > 0]
-    df['delta_r'] = delta_r(df['cl3d_eta'], df['cl3d_phi'], df['genpart_exeta'], df['genpart_exphi'])
+    #df = df[df['cl3d_ienergy'] > 0]
+    df['delta_r'] = delta_r(df[f"{prefix}_eta"], df[f"{prefix}_phi"], df['genpart_exeta'], df['genpart_exphi'])
     df_filtered = df[df['delta_r'] < delta_r_threshold]
-    df_sorted = df_filtered.sort_values(by=['event', 'cl3d_energy', 'delta_r'], ascending=[True, False, True])
+    df_sorted = df_filtered.sort_values(by=['event', f"{prefix}_energy", 'delta_r'], ascending=[True, False, True])
     df_best_match = df_sorted.groupby('event').first().reset_index()
     return df_best_match
 
@@ -128,11 +128,11 @@ def plot_delta_r_3d_two_dfs(df, label, plots_dir, eta_col='cl3d_eta', energy_col
     print(f"Saved plot as: {filename}")
     plt.show()
 
-def plot_histograms(df_signal, df_bg1, df_bg2, df_bg3, variables, label_signal, label_bg1, label_bg2, label_bg3, plots_dir, var_latex_map, num_bins=40, cl3d_pt_range=(20, 120), figsize=(8, 4)):
-    df_signal_filtered = df_signal[(df_signal['cl3d_pt'] >= cl3d_pt_range[0]) & (df_signal['cl3d_pt'] <= cl3d_pt_range[1])]
-    df_bg1_filtered = df_bg1[(df_bg1['cl3d_pt'] >= cl3d_pt_range[0]) & (df_bg1['cl3d_pt'] <= cl3d_pt_range[1])]
-    df_bg2_filtered = df_bg2[(df_bg2['cl3d_pt'] >= cl3d_pt_range[0]) & (df_bg2['cl3d_pt'] <= cl3d_pt_range[1])]
-    df_bg3_filtered = df_bg3[(df_bg3['cl3d_pt'] >= cl3d_pt_range[0]) & (df_bg3['cl3d_pt'] <= cl3d_pt_range[1])]
+def plot_histograms(df_signal, df_bg1, df_bg2, df_bg3, variables, label_signal, label_bg1, label_bg2, label_bg3, plots_dir, var_latex_map, prefix, num_bins=40, cl3d_pt_range=(20, 200), figsize=(8, 4)):
+    df_signal_filtered = df_signal[(df_signal[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_signal[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
+    df_bg1_filtered = df_bg1[(df_bg1[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg1[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
+    df_bg2_filtered = df_bg2[(df_bg2[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg2[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
+    df_bg3_filtered = df_bg3[(df_bg3[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg3[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
 
     for var in variables:
         plt.figure(figsize=figsize)
@@ -147,7 +147,7 @@ def plot_histograms(df_signal, df_bg1, df_bg2, df_bg3, variables, label_signal, 
             bin_edges = np.arange(min_value - bin_width / 2, max_value + bin_width / 2, bin_width)
         plt.hist(df_signal_filtered[var], histtype='step', bins=bin_edges, color='b', linewidth=1.5, label=label_signal, density=True)
         plt.hist(df_bg1_filtered[var], histtype='step', bins=bin_edges, color='g', linewidth=1.5, label=label_bg1, density=True)
-        plt.hist(df_bg2_filtered[var], histtype='step', bins=bin_edges, color='r', linewidth=1.5, label=label_bg2, density=True, weights=df_bg2_filtered["flat_weight"])
+        plt.hist(df_bg2_filtered[var], histtype='step', bins=bin_edges, color='r', linewidth=1.5, label=label_bg2, density=True)
         plt.hist(df_bg3_filtered[var], histtype='step', bins=bin_edges, color='black', linewidth=1.5, label=label_bg3, density=True)
         plt.title("Cluster " + f"{var_latex_map.get(var, var)} Histogram", fontsize=14)
         plt.xlabel(var_latex_map.get(var, var), fontsize=12)
@@ -290,3 +290,58 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
 
     os.chdir(base_dir)
     return (precision, depth, rounds, acc, macro_auc, LUT)
+
+
+def variables_to_plot(prefix):
+    variables = [f'cl3d_{prefix}_pt', f'cl3d_{prefix}_energy', f'cl3d_{prefix}_eta', f'cl3d_{prefix}_phi', 
+       f'cl3d_{prefix}_emax1layers', f'cl3d_{prefix}_emax3layers', f'cl3d_{prefix}_showerlength', f'cl3d_{prefix}_coreshowerlength', 
+       f'cl3d_{prefix}_firstlayer', f'cl3d_{prefix}_maxlayer', f'cl3d_{prefix}_varrr', f'cl3d_{prefix}_varzz', f'cl3d_{prefix}_varee', 
+       f'cl3d_{prefix}_varpp', f'cl3d_{prefix}_emaxe', f'cl3d_{prefix}_hoe', f'cl3d_{prefix}_meanz', 
+       f'cl3d_{prefix}_first1layers', f'cl3d_{prefix}_first3layers', f'cl3d_{prefix}_first5layers', 
+       f'cl3d_{prefix}_firstHcal1layers', f'cl3d_{prefix}_firstHcal3layers',
+       f'cl3d_{prefix}_firstHcal5layers', f'cl3d_{prefix}_last1layers', f'cl3d_{prefix}_last3layers',
+       f'cl3d_{prefix}_last5layers', f'cl3d_{prefix}_eot', f'cl3d_{prefix}_ebm0', f'cl3d_{prefix}_ebm1']#, 'cl3d_Ref_hbm']
+    return variables
+
+def columns_for_training(prefix):
+    columns = [
+     f'cl3d_{prefix}_showerlength', f'cl3d_{prefix}_coreshowerlength', f'cl3d_{prefix}_firstlayer', 
+     f'cl3d_{prefix}_eot', f'cl3d_{prefix}_firstHcal5layers', f'cl3d_{prefix}_first5layers', 
+     f'cl3d_{prefix}_varrr', f'cl3d_{prefix}_varzz', f'cl3d_{prefix}_varee', f'cl3d_{prefix}_varpp', f'cl3d_{prefix}_meanz', 
+     f'cl3d_{prefix}_last5layers', f'cl3d_{prefix}_emax5layers', 
+     f'cl3d_{prefix}_ebm0', f'cl3d_{prefix}_ebm1', f'cl3d_{prefix}_hbm'
+]
+    return columns
+
+def var_map(prefix):
+    var_latex_map = {
+    f'cl3d_{prefix}_pt': r'$p_T$ [GeV]', 
+    f'cl3d_{prefix}_energy': 'Energy [GeV]', 
+    f'cl3d_{prefix}_eta': r'$\eta$',
+    f'cl3d_{prefix}_phi': r'$\phi$',
+    f'cl3d_{prefix}_emax1layers': 'Emax1layers',
+    f'cl3d_{prefix}_emax3layers': 'Emax3layers',
+    f'cl3d_{prefix}_emax5layers': 'Emax5layers',
+    f'cl3d_{prefix}_showerlength': 'Shower Length',
+    f'cl3d_{prefix}_coreshowerlength': 'Core Shower Length',
+    f'cl3d_{prefix}_firstlayer': 'First Layer',
+    f'cl3d_{prefix}_hoe': 'CE-H/CE-E',
+    f'cl3d_{prefix}_varrr': '$\sigma^2_{rr}$',
+    f'cl3d_{prefix}_varzz': '$\sigma^2_{zz}$',
+    f'cl3d_{prefix}_varee': '$\sigma^2_{\eta\eta}$',
+    f'cl3d_{prefix}_varpp': '$\sigma^2_{\phi\phi}$',
+    f'cl3d_{prefix}_meanz': '<z>',
+    f'cl3d_{prefix}_first1layers': 'First1layer',
+    f'cl3d_{prefix}_first3layers': 'First3layers',
+    f'cl3d_{prefix}_first5layers': 'First5layers',
+    f'cl3d_{prefix}_firstHcal1layers': 'FirstHcal1layer',
+    f'cl3d_{prefix}_firstHcal3layers': 'First Hcal3layers',
+    f'cl3d_{prefix}_firstHcal5layers': 'First Hcal5layers',
+    f'cl3d_{prefix}_last1layers': 'Last1layer',
+    f'cl3d_{prefix}_last3layers': 'Last3layers',
+    f'cl3d_{prefix}_last5layers': 'Last5layers',
+    f'cl3d_{prefix}_ebm0' : 'EBM0', 
+    f'cl3d_{prefix}_ebm1' : 'EBM1',
+    f'cl3d_{prefix}_hbm' : 'HBM',
+    f'cl3d_{prefix}_eot' : 'E/Total E'}
+    return var_latex_map
