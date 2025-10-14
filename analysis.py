@@ -75,7 +75,7 @@ def load_and_filter_hdf(df_gen_path, df_cl3d_path):
             df_cl3d,
             on="event",
             how="inner",  # Keep only rows where the event ID exists in both
-            suffixes=('_gen', '_cl3d')  # Differentiate common column names
+            #suffixes=('_gen', '_cl3d')  # Differentiate common column names
         )
         return merged_df
 

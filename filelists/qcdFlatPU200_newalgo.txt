@@ -1,0 +1,1 @@
+root://eoscms.cern.ch//store/group/dpg_hgcal/comm_hgcal/TPG/stage2_emulator_ntuples_semiemulator_2Passes/qcdFlat_PU200/ntuple_0.root
