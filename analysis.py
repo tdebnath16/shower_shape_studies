@@ -9,7 +9,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve, auc
 from sklearn.preprocessing import label_binarize
 from sklearn.utils.class_weight import compute_sample_weight
-import conifer
 import shutil
 import datetime
 from sklearn.datasets import make_hastie_10_2
@@ -62,7 +61,16 @@ def load_and_filter_tree(tree, filter_pt = 20, eta_range=(1.6, 2.8), cl_pt_thres
     return merged_df
 
 # Function to load and filter the tree data (for HDF file)
-def load_and_filter_hdf(df_gen_path, df_cl3d_path):
+def load_and_filter_hdf(df1, df2):
+    merged_df = pd.merge(
+        df1,
+        df2,
+        on="event",
+        how="inner",  # Keep only rows where the event ID exists in both
+        #suffixes=('_gen', '_cl3d')  # Differentiate common column names
+    )
+    return merged_df
+def load_and_filter_hdf_path(df_gen_path, df_cl3d_path):
     if df_gen_path == 'None':
         df_cl3d = pd.read_hdf(df_cl3d_path)
         return df_cl3d 
@@ -128,12 +136,10 @@ def plot_delta_r_3d_two_dfs(df, label, plots_dir, eta_col='cl3d_eta', energy_col
     print(f"Saved plot as: {filename}")
     plt.show()
 
-def plot_histograms(df_signal, df_bg1, df_bg2, df_bg3, variables, label_signal, label_bg1, label_bg2, label_bg3, plots_dir, var_latex_map, prefix, num_bins=40, cl3d_pt_range=(20, 200), figsize=(8, 4)):
+def plot_histograms(df_signal, df_bg1, df_bg2, variables, label_signal, label_bg1, label_bg2, plots_dir, var_latex_map, prefix, num_bins=40, cl3d_pt_range=(20, 200), figsize=(8, 4)):
     df_signal_filtered = df_signal[(df_signal[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_signal[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
     df_bg1_filtered = df_bg1[(df_bg1[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg1[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
     df_bg2_filtered = df_bg2[(df_bg2[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg2[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
-    df_bg3_filtered = df_bg3[(df_bg3[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg3[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
-
     for var in variables:
         plt.figure(figsize=figsize)
         if df_signal_filtered[var].dtype in ['int64', 'int32']:
@@ -148,13 +154,11 @@ def plot_histograms(df_signal, df_bg1, df_bg2, df_bg3, variables, label_signal, 
         plt.hist(df_signal_filtered[var], histtype='step', bins=bin_edges, color='b', linewidth=1.5, label=label_signal, density=True)
         plt.hist(df_bg1_filtered[var], histtype='step', bins=bin_edges, color='g', linewidth=1.5, label=label_bg1, density=True)
         plt.hist(df_bg2_filtered[var], histtype='step', bins=bin_edges, color='r', linewidth=1.5, label=label_bg2, density=True)
-        plt.hist(df_bg3_filtered[var], histtype='step', bins=bin_edges, color='black', linewidth=1.5, label=label_bg3, density=True)
         plt.title("Cluster " + f"{var_latex_map.get(var, var)} Histogram", fontsize=14)
         plt.xlabel(var_latex_map.get(var, var), fontsize=12)
         plt.ylabel('Normalized Frequency', fontsize=12)
         plt.legend()
         plt.tight_layout()
-
         filename = os.path.join(plots_dir, f"{var}_histogram.png")
         plt.savefig(filename, dpi=300)
         print(f"Saved: {filename}")
@@ -345,3 +349,118 @@ def var_map(prefix):
     f'cl3d_{prefix}_hbm' : 'HBM',
     f'cl3d_{prefix}_eot' : 'E/Total E'}
     return var_latex_map
+
+from pandas.api.types import is_integer_dtype
+def plot_across_four_lists(
+    df_ref, df_p016, df_p03, df_p045,
+    vars_ref, vars_p016, vars_p03, vars_p045,   # full column names per DF
+    label_ref="Ref", label_p016="p=0.16", label_p03="p=0.30", label_p045="p=0.45",
+    plots_dir="plots_triangles",
+    var_latex_map=None,                         # can map full name or suffix
+    num_bins=40, cl3d_pt_range=(20, 200),
+    pt_col_ref="cl3d_Ref_pt", pt_col_p016="cl3d_p016Tri_pt",
+    pt_col_p03="cl3d_p03Tri_pt", pt_col_p045="cl3d_p045Tri_pt",
+    density=True, logy=False, weight_cols=None  # weight_cols: dict with keys "ref","p016","p03","p045"
+):
+    """
+    Overlay SAME physics variable across four triangle configs.
+    You explicitly provide per-DF variable lists (full column names).
+    We'll match variables by their suffix (text after the last underscore), e.g. '..._showerlength'.
+    """
+
+    os.makedirs(plots_dir, exist_ok=True)
+    if var_latex_map is None:
+        var_latex_map = {}
+
+    # Build maps: suffix -> full col name (for each DF)
+    def suffix(name): 
+        return name.split("_", maxsplit=2)[-1] if name.count("_")>=2 else name
+
+    by_suffix = {"ref":{}, "p016":{}, "p03":{}, "p045":{}}
+    for c in vars_ref:  by_suffix["ref"][suffix(c)]  = c
+    for c in vars_p016: by_suffix["p016"][suffix(c)] = c
+    for c in vars_p03:  by_suffix["p03"][suffix(c)]  = c
+    for c in vars_p045: by_suffix["p045"][suffix(c)] = c
+
+    # Union of all suffixes to try plotting
+    all_suffixes = list(dict.fromkeys(
+        list(by_suffix["ref"].keys()) +
+        list(by_suffix["p016"].keys()) +
+        list(by_suffix["p03"].keys()) +
+        list(by_suffix["p045"].keys())
+    ))
+
+    # Helper to get (series, weights) after pT window for a given variant
+    def select(df, col, pt_col, wcol):
+        if (col not in df.columns) or (pt_col not in df.columns): 
+            return pd.Series(dtype=float), None
+        m = (df[pt_col] >= cl3d_pt_range[0]) & (df[pt_col] <= cl3d_pt_range[1])
+        ser = df.loc[m, col].dropna()
+        w = (df.loc[m, wcol] if (wcol and wcol in df.columns) else None)
+        if w is not None: w = w.loc[ser.index]
+        return ser, w
+
+    # Iterate each suffix (i.e., each physics variable)
+    for suf in all_suffixes:
+        cols = {
+            "ref":  by_suffix["ref"].get(suf,  None),
+            "p016": by_suffix["p016"].get(suf, None),
+            "p03":  by_suffix["p03"].get(suf,  None),
+            "p045": by_suffix["p045"].get(suf, None),
+        }
+
+        # Gather data
+        s_ref,  w_ref  = select(df_ref,  cols["ref"],  pt_col_ref,  (weight_cols or {}).get("ref"))
+        s_p016, w_p016 = select(df_p016, cols["p016"], pt_col_p016, (weight_cols or {}).get("p016"))
+        s_p03,  w_p03  = select(df_p03,  cols["p03"],  pt_col_p03,  (weight_cols or {}).get("p03"))
+        s_p045, w_p045 = select(df_p045, cols["p045"], pt_col_p045, (weight_cols or {}).get("p045"))
+
+        series_list = [s for s in [s_ref, s_p016, s_p03, s_p045] if not s.empty]
+        if not series_list:
+            print(f"[skip] No data for '{suf}' after pT filter.")
+            continue
+
+        # Binning: integer bins if all are integer-like, else uniform numeric bins
+        mins = [s.min() for s in series_list]
+        maxs = [s.max() for s in series_list]
+        all_int = all(is_integer_dtype(s) for s in series_list)
+        gmin, gmax = float(np.min(mins)), float(np.max(maxs))
+        if all_int and np.isfinite(gmin) and np.isfinite(gmax):
+            bin_edges = np.arange(np.floor(gmin)-0.5, np.ceil(gmax)+1.5, 1.0)
+        else:
+            if gmin == gmax:
+                gmin -= 0.5; gmax += 0.5
+            bw = (gmax - gmin) / float(num_bins)
+            bin_edges = np.arange(gmin - bw/2, gmax + bw/2 + 1e-12, bw)
+
+        # Plot
+        plt.figure(figsize=(8,4))
+        if not s_ref.empty:
+            plt.hist(s_ref.values,  bins=bin_edges, histtype="step", label=label_ref,  density=density, weights=(w_ref.values if w_ref is not None else None))
+        if not s_p016.empty:
+            plt.hist(s_p016.values, bins=bin_edges, histtype="step", label=label_p016, density=density, weights=(w_p016.values if w_p016 is not None else None))
+        if not s_p03.empty:
+            plt.hist(s_p03.values,  bins=bin_edges, histtype="step", label=label_p03,  density=density, weights=(w_p03.values if w_p03 is not None else None))
+        if not s_p045.empty:
+            plt.hist(s_p045.values, bins=bin_edges, histtype="step", label=label_p045, density=density, weights=(w_p045.values if w_p045 is not None else None))
+
+        # Labels
+        # try full-name first from whichever exists, else fall back to suffix
+        sample_full = next((c for c in [cols["ref"], cols["p016"], cols["p03"], cols["p045"]] if c is not None), None)
+        x_label = (
+            (var_latex_map or {}).get(sample_full) or
+            (var_latex_map or {}).get(suf) or
+            suf
+        )
+        plt.title(f"{x_label} across triangle sizes", fontsize=14)
+        plt.xlabel(x_label, fontsize=12)
+        plt.ylabel("Normalized Frequency" if density else "Entries", fontsize=12)
+        if logy: plt.yscale("log")
+        plt.legend()
+        plt.tight_layout()
+
+        out = os.path.join(plots_dir, f"{suf}_across_triangles.png")
+        plt.savefig(out, dpi=300)
+        print(f"Saved: {out}")
+        plt.show()
+        plt.close()
