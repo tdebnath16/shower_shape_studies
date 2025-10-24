@@ -67,15 +67,15 @@ def load_and_filter_signal_tree(tree, filter_pt=20, eta_range=(1.6, 2.8), cl_pt_
                                                                          "cl3d_p045Tri_ebm0", "cl3d_p045Tri_ebm1", "cl3d_p045Tri_hbm", "event"]))
     # Apply filters to gen DataFrame
     df_gen_filtered = df_gen[(df_gen['gen_pt'] > filter_pt) & 
-                             (df_gen['gen_pdgid'] == 22) & 
-                             (df_gen['gen_status'] == 1) & 
+                             #(df_gen['gen_pdgid'] == 22) & 
+                             #(df_gen['gen_status'] == 1) & 
                              (abs(df_gen['gen_eta']) > eta_range[0]) & 
                              (abs(df_gen['gen_eta']) < eta_range[1]) ]
     df_genpart_filtered = df_genpart[(df_genpart['genpart_reachedEE'] == 2) & 
                               (df_genpart['genpart_gen'] == 1) &
                               (abs(df_genpart['genpart_exeta']) > eta_range[0]) & 
                               (abs(df_genpart['genpart_exeta']) < eta_range[1])]
-    df_gen_merged = ana.load_and_filter_hdf(df_gen_filtered, df_genpart_filtered)
+    df_gen_merged = ana.load_and_filter_hdf(df_gen_filtered, df_genpart)
     # Apply filters to cl3d DataFrame
     df_cl3d_Ref_filtered = df_cl3d_Ref[(df_cl3d_Ref['cl3d_Ref_pt'] > cl_pt_threshold) & 
                                 (abs(df_cl3d_Ref['cl3d_Ref_eta']) > eta_range[0]) & 
@@ -141,12 +141,12 @@ def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, num_
     combined_cl3d_p045_df = pd.concat(cl3d_p045_dfs, ignore_index=True)
 
     # Save the combined DataFrames to output files
-    gen_output_path = f"{output_dir}/photonPU200_newalgogen_filtered.h5"
-    cl3d_Ref_output_path = f"{output_dir}/photonPU200_newalgocl3d_Ref_filtered.h5"
-    cl3d_p0113_output_path = f"{output_dir}/photonPU200_newalgocl3d_p0113_filtered.h5"
-    cl3d_p016_output_path = f"{output_dir}/photonPU200_newalgocl3d_p016_filtered.h5"
-    cl3d_p03_output_path = f"{output_dir}/photonPU200_newalgocl3d_p03_filtered.h5"
-    cl3d_p045_output_path = f"{output_dir}/photonPU200_newalgocl3d_p045_filtered.h5"
+    gen_output_path = f"{output_dir}/pionPU200_newalgogen_filtered.h5"
+    cl3d_Ref_output_path = f"{output_dir}/pionPU200_newalgocl3d_Ref_filtered.h5"
+    cl3d_p0113_output_path = f"{output_dir}/pionPU200_newalgocl3d_p0113_filtered.h5"
+    cl3d_p016_output_path = f"{output_dir}/pionPU200_newalgocl3d_p016_filtered.h5"
+    cl3d_p03_output_path = f"{output_dir}/pionPU200_newalgocl3d_p03_filtered.h5"
+    cl3d_p045_output_path = f"{output_dir}/pionPU200_newalgocl3d_p045_filtered.h5"
     combined_gen_df.to_hdf(gen_output_path, key="gen", mode="w")
     combined_cl3d_Ref_df.to_hdf(cl3d_Ref_output_path, key="cl3d_Ref", mode="w")
     combined_cl3d_p0113_df.to_hdf(cl3d_p0113_output_path, key="cl3d_p0113", mode="w")
@@ -160,4 +160,4 @@ tree_name = "HGCalTriggerNtuple"
 output_dir = "/data/data.polcms/cms/debnath/HGCAL/CMSSW_14_0_5/src/shower_shape_studies/samples"
 
 # Process the files in parallel (using 20 processes)
-process_files_parallel("filelists/photonPU200_newalgo.txt", bg_folder, tree_name, output_dir, num_processes=30)
+process_files_parallel("filelists/pionsPU200_newalgo.txt", bg_folder, tree_name, output_dir, num_processes=30)
