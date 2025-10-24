@@ -126,7 +126,6 @@ Q_test  = cf_helper.transform_quantizers(X_test,  qspec).astype('float32')
 # results table (SW = XGBoost in Python; HDL = Conifer-generated model)
 result_cols = ["precision","depth","rounds","acc_sw","auc_sw","acc_hdl","auc_hdl","LUT","splits","time_s"]
 result_table = pd.DataFrame(columns=result_cols)
-base_dir = os.getcwd()
 iteration = 0
 for prec in range(args.prec_min, args.prec_max, 1):
     for depth in range(args.depth_min, args.depth_max, 1):

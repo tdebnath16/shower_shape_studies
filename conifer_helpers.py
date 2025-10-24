@@ -1,16 +1,10 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import awkward as ak
-import seaborn as sns
 import analysis as ana
-import os, time, datetime, shutil, json, shap, pathlib
+import os, time
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, roc_curve, auc
-from sklearn.preprocessing import label_binarize, MinMaxScaler, LabelEncoder
-from sklearn.utils.class_weight import compute_sample_weight
-from sklearn.datasets import make_hastie_10_2
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder
 from pandas.api.types import is_float_dtype, is_integer_dtype
 from math import ceil, log2
 from scipy.special import softmax
@@ -301,7 +295,7 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
     X_csim = np.ascontiguousarray(qtest_scaled.to_numpy(dtype=np.float32))
     logits_hdl = cnf_model.decision_function(X_csim)
     logits_hdl = np.asarray(logits_hdl, dtype=float)
-    prob_hdl = _softmax(logits_hdl)
+    prob_hdl = softmax(logits_hdl)
     ypred_hdl = np.argmax(prob_hdl, axis=1)
 
     # Build (csim) to generate reports; some flows create util.rpt on compile+build
@@ -319,7 +313,4 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
     dur = time.time() - t0
     print(f"[{iteration}] Done: acc_sw={acc_sw:.4f}, auc_sw={auc_sw:.4f}, "
           f"acc_hdl={acc_hdl:.4f}, auc_hdl={auc_hdl:.4f}, LUT={lut}, splits ={splits}, time={dur:.2f}s")
-
-    # ensure we end in original dir (defensive)
-    os.chdir(base_dir)
     return (precision, depth, rounds, acc_sw, auc_sw, acc_hdl, auc_hdl, lut, splits, dur)
