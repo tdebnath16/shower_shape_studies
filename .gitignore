@@ -32,6 +32,7 @@
 *.g
 *style*
 *.png
+*.csv
 *.directive
 *.root
 *.h5
