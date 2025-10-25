@@ -11,10 +11,9 @@ from scipy.special import softmax
 import conifer
 from typing import Optional, Dict, Mapping, Union
 from pathlib import Path
-
+import os, glob, re, xml.etree.ElementTree as ET
 
 def maxbits(series: pd.Series, maxbit: int) -> int:
-    """Floats -> maxbit. Int-like -> smallest bits to cover unique values (capped by maxbit)."""
     if is_float_dtype(series):
         return int(maxbit)
     uniq = pd.unique(series.dropna())
@@ -23,25 +22,19 @@ def maxbits(series: pd.Series, maxbit: int) -> int:
     return int(min(maxbit, max(1, bits_needed)))
 
 def _learn_edges(x: np.ndarray, nbits: int, method: str, fmin=None, fmax=None):
-    """Return monotone bin edges of length nbins+1."""
     nbins = 2**nbits
     x = x[np.isfinite(x)]
     if x.size == 0:
-        # degenerate; dummy edges
         return np.array([0, 1], dtype=float)
-
     lo = np.min(x) if fmin is None else float(fmin)
     hi = np.max(x) if fmax is None else float(fmax)
     if not (hi > lo):
-        # constant -> two close edges
         return np.array([lo, lo+1e-9], dtype=float)
-
     if method == 'uniform':
         edges = np.linspace(lo, hi, nbins+1, endpoint=True)
     elif method == 'percentile':
         qs = np.linspace(0, 100, nbins+1)
         edges = np.percentile(x, qs)
-        # enforce monotonicity & degen fallback
         edges = np.maximum.accumulate(edges)
         if not (edges[-1] > edges[0]):
             edges = np.linspace(lo, hi, nbins+1, endpoint=True)
@@ -50,7 +43,6 @@ def _learn_edges(x: np.ndarray, nbits: int, method: str, fmin=None, fmax=None):
     return edges
 
 def _digitize_codes(x: np.ndarray, edges: np.ndarray, keep_nan_code: int = -1):
-    """Digitize to 0..nbins-1, set NaN/inf to keep_nan_code."""
     codes = np.full(x.shape, keep_nan_code, dtype=np.int32)
     finite = np.isfinite(x)
     if finite.any():
@@ -67,10 +59,6 @@ def fit_quantizers(
     int_method: str = 'uniform',
     per_feature_bits: Optional[Mapping[str, int]] = None,   # <- fix here
 ):
-    """
-    Learn quantization edges per feature on the *training set*.
-    Returns dict: {feat: {'nbits', 'edges', 'method'}}.
-    """
     qs: Dict[str, Dict[str, object]] = {}
     for c in X_train.columns:
         s = X_train[c]
@@ -84,10 +72,6 @@ def fit_quantizers(
         qs[c] = {'nbits': nbits, 'edges': edges, 'method': method}
     return qs
 def transform_quantizers(X: pd.DataFrame, qspec: dict, keep_nan_code: int = -1) -> pd.DataFrame:
-    """
-    Apply learned quantizers to any DataFrame of same columns.
-    Returns a new DataFrame of integer codes.
-    """
     out = {}
     for c, spec in qspec.items():
         x = pd.to_numeric(X[c], errors='coerce').to_numpy(dtype='float64', copy=False)
@@ -97,23 +81,15 @@ def transform_quantizers(X: pd.DataFrame, qspec: dict, keep_nan_code: int = -1) 
 
 def count_total_splits(booster: xgb.Booster) -> int:
     df = booster.trees_to_dataframe()
-    # internal nodes have Feature != 'Leaf'
     return int((df['Feature'] != 'Leaf').sum())
 
-# ---- timing helper for bridge inference ----
 def timed_decision_function(model, X_np):
     t0 = time.perf_counter()
     logits = model.decision_function(X_np)
     dt = time.perf_counter() - t0
     return np.asarray(logits), dt
 
-# ---- parse Vitis/Vivado HLS reports for LUTs and latency (cycles) ----
 def parse_hls_reports(output_dir: Union[str, Path]):
-    """
-    Returns dict with keys: LUT, FF, BRAM, DSP, LatencyMin, LatencyMax, Interval
-    Looks for csynth report under solution/syn/report/*.rpt.
-    """
-    import re, numpy as np
     out = dict(LUT=np.nan, FF=np.nan, BRAM=np.nan, DSP=np.nan,
                LatencyMin=np.nan, LatencyMax=np.nan, Interval=np.nan)
     outdir = Path(output_dir)
@@ -148,29 +124,21 @@ def _parse_lut_from_report(report_path):
         return None
     with open(report_path, "r") as f:
         lines = f.readlines()
-
-    # Try the classic fixed-line index first (your previous flow)
     try:
         parts = lines[37].split("|")
         return int(parts[2])
     except Exception:
         pass
-
-    # Fallback: search a line containing 'LUT' and parse the first integer
     for line in lines:
         if "LUT" in line and "|" in line:
-            # e.g. "|  LUT  |   12345   | ..."
             try:
                 fields = [s.strip() for s in line.split("|") if s.strip()]
-                # find numeric field
                 for tok in fields:
                     if tok.isdigit():
                         return int(tok)
             except Exception:
                 continue
     return None
-
-import os, glob, re, xml.etree.ElementTree as ET
 
 def inspect_hls_reports(output_dir: str):
     print(f"[inspect] OutputDir = {output_dir}")
@@ -226,13 +194,13 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
     t0 = time.time()
     print(f"[{iteration}] Training model: precision={precision}, depth={depth}, rounds={rounds}")
 
-    # ---- Step 0: ensure labels are 0..(K-1) ----
+    # ensure labels are 0..(K-1) 
     le = LabelEncoder()
     y_train_enc = le.fit_transform(y_train)
     y_test_enc  = le.transform(y_test)
     n_classes = len(le.classes_)
 
-    # ---- Step 1: Quantization (uniform, bins from TRAIN only) ----
+    # Quantization (uniform, bins from TRAIN only) 
     qtrain = pd.DataFrame(index=X_train.index)
     qtest  = pd.DataFrame(index=X_test.index)
     for feat in X_train.columns:
@@ -241,22 +209,22 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
         qtrain[feat] = ana.quantize(X_train[feat], precision, 'uniform', fmin, fmax)
         qtest[feat]  = ana.quantize(X_test[feat],  precision, 'uniform', fmin, fmax)
 
-    # ---- Step 2: Normalize to [0, 1) for fixed-point ap_fixed<precision,0> ----
+    # Normalize to [0, 1) for fixed-point ap_fixed<precision,0> 
     max_range = 1.0 - 1.0/(2**precision)
     scaler = MinMaxScaler(feature_range=(0.0, max_range))
     qtrain_scaled = pd.DataFrame(scaler.fit_transform(qtrain), columns=X_train.columns, index=X_train.index)
     qtest_scaled  = pd.DataFrame(scaler.transform(qtest),     columns=X_test.columns,  index=X_test.index)
 
-    # ---- Step 3: Train XGBoost (multi-class, softprob) ----
+    # Train XGBoost (multi-class, softprob) 
     model = xgb.XGBClassifier(
         objective='multi:softprob',
         num_class=n_classes,
         max_depth=depth,
         n_estimators=rounds,
-        learning_rate=0.05,
+        learning_rate=0.001,
         eval_metric='mlogloss',
         n_jobs=8,
-        verbosity=0
+        verbosity=1
     )
     model.fit(qtrain_scaled, y_train_enc)
 
@@ -271,22 +239,17 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
         # If a class is absent in the test fold, AUC may fail; fall back to NaN
         auc_sw = np.nan
 
-    # ---- Step 4: Conifer (VHDL backend for VU13P) ----
+    # Conifer (VHDL backend for VU13P) ----
     cfg = conifer.backends.vhdl.auto_config()
     proj_dir = f"hdlprojects/prj_vhdl_multiclass_{precision}_{depth}_{rounds}_{iteration}"
-    # clean project dir if exists (your ana.remove_folder does that)
     if os.path.exists(proj_dir):
         ana.remove_folder(proj_dir)
     os.makedirs(proj_dir, exist_ok=True)
-
     cfg['OutputDir']   = proj_dir
     cfg['XilinxPart']  = 'xcvu13p-fhgb2104-2L-e'#VU13P
     cfg['Precision']   = f"ap_fixed<{precision},0>"   # inputs are [0,1)
     cfg['ClockPeriod'] = 3
     cfg['ProjectName'] = 'hgcal_multiclass'
-
-    # Convert & compile
-    # Option A: direct model() call
     booster = model.get_booster()
     cnf_model = conifer.converters.convert_from_xgboost(booster, cfg)
     cnf_model.compile()

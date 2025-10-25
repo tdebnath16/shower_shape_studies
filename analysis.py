@@ -12,6 +12,7 @@ from sklearn.utils.class_weight import compute_sample_weight
 import shutil
 import datetime
 from sklearn.datasets import make_hastie_10_2
+from pandas.api.types import is_integer_dtype
 import logging
 import sys
 
@@ -350,34 +351,61 @@ def var_map(prefix):
     f'cl3d_{prefix}_eot' : 'E/Total E'}
     return var_latex_map
 
-from pandas.api.types import is_integer_dtype
-def plot_across_four_lists(
-    df_ref, df_p016, df_p03, df_p045,
-    vars_ref, vars_p016, vars_p03, vars_p045,   # full column names per DF
-    label_ref="Ref", label_p016="p=0.16", label_p03="p=0.30", label_p045="p=0.45",
-    plots_dir="plots_triangles",
-    var_latex_map=None,                         # can map full name or suffix
-    num_bins=40, cl3d_pt_range=(20, 200),
-    pt_col_ref="cl3d_Ref_pt", pt_col_p016="cl3d_p016Tri_pt",
-    pt_col_p03="cl3d_p03Tri_pt", pt_col_p045="cl3d_p045Tri_pt",
-    density=True, logy=False, weight_cols=None  # weight_cols: dict with keys "ref","p016","p03","p045"
-):
-    """
-    Overlay SAME physics variable across four triangle configs.
-    You explicitly provide per-DF variable lists (full column names).
-    We'll match variables by their suffix (text after the last underscore), e.g. '..._showerlength'.
-    """
+def var_map_suffix() -> dict:
+    """Latex labels keyed by the *suffix* (last token after the second underscore)."""
+    return {
+        "pt"               : r"$p_T$ [GeV]",
+        "energy"           : "Energy [GeV]",
+        "eta"              : r"$\eta$",
+        "phi"              : r"$\phi$",
+        "emax1layers"      : "Emax1layers",
+        "emax3layers"      : "Emax3layers",
+        "emax5layers"      : "Emax5layers",
+        "showerlength"     : "Shower Length",
+        "coreshowerlength" : "Core Shower Length",
+        "firstlayer"       : "First Layer",
+        "hoe"              : "CE-H/CE-E",
+        "varrr"            : r"$\sigma^2_{rr}$",
+        "varzz"            : r"$\sigma^2_{zz}$",
+        "varee"            : r"$\sigma^2_{\eta\eta}$",
+        "varpp"            : r"$\sigma^2_{\phi\phi}$",
+        "meanz"            : r"$\langle z \rangle$",
+        "first1layers"     : "First1layer",
+        "first3layers"     : "First3layers",
+        "first5layers"     : "First5layers",
+        "firstHcal1layers" : "First Hcal1layer",
+        "firstHcal3layers" : "First Hcal3layers",
+        "firstHcal5layers" : "First Hcal5layers",
+        "last1layers"      : "Last1layer",
+        "last3layers"      : "Last3layers",
+        "last5layers"      : "Last5layers",
+        "ebm0"             : "EBM0",
+        "ebm1"             : "EBM1",
+        "hbm"              : "HBM",
+        "eot"              : "CE-E/Total E",
+    }
 
+from pandas.api.types import is_integer_dtype
+def plot_across_five_lists(
+    df_ref, df_p0113, df_p016, df_p03, df_p045,
+    vars_ref, vars_p0113, vars_p016, vars_p03, vars_p045,
+    label_ref="Ref", label_p0113="p=0.113", label_p016="p=0.16", label_p03="p=0.30", label_p045="p=0.45",
+    plots_dir="plots_triangles", var_latex_map=None, num_bins=40, cl3d_pt_range=(20, 200),
+    pt_col_ref="cl3d_Ref_pt", pt_col_p0113="cl3d_p0113Tri_pt", pt_col_p016="cl3d_p016Tri_pt",
+    pt_col_p03="cl3d_p03Tri_pt", pt_col_p045="cl3d_p045Tri_pt",
+    density=False, logy=False, weight_cols=None
+):
     os.makedirs(plots_dir, exist_ok=True)
     if var_latex_map is None:
         var_latex_map = {}
-
+    suffix_labels = var_map_suffix()
     # Build maps: suffix -> full col name (for each DF)
     def suffix(name): 
         return name.split("_", maxsplit=2)[-1] if name.count("_")>=2 else name
 
-    by_suffix = {"ref":{}, "p016":{}, "p03":{}, "p045":{}}
+    by_suffix = {"ref":{}, "p0113":{}, "p016":{}, "p03":{}, "p045":{}}
     for c in vars_ref:  by_suffix["ref"][suffix(c)]  = c
+    for c in vars_p0113: by_suffix["p0113"][suffix(c)] = c
     for c in vars_p016: by_suffix["p016"][suffix(c)] = c
     for c in vars_p03:  by_suffix["p03"][suffix(c)]  = c
     for c in vars_p045: by_suffix["p045"][suffix(c)] = c
@@ -385,6 +413,7 @@ def plot_across_four_lists(
     # Union of all suffixes to try plotting
     all_suffixes = list(dict.fromkeys(
         list(by_suffix["ref"].keys()) +
+        list(by_suffix["p0113"].keys()) +
         list(by_suffix["p016"].keys()) +
         list(by_suffix["p03"].keys()) +
         list(by_suffix["p045"].keys())
@@ -404,6 +433,7 @@ def plot_across_four_lists(
     for suf in all_suffixes:
         cols = {
             "ref":  by_suffix["ref"].get(suf,  None),
+            "p0113": by_suffix["p0113"].get(suf, None),
             "p016": by_suffix["p016"].get(suf, None),
             "p03":  by_suffix["p03"].get(suf,  None),
             "p045": by_suffix["p045"].get(suf, None),
@@ -411,11 +441,12 @@ def plot_across_four_lists(
 
         # Gather data
         s_ref,  w_ref  = select(df_ref,  cols["ref"],  pt_col_ref,  (weight_cols or {}).get("ref"))
+        s_p0113, w_p0113 = select(df_p0113, cols["p0113"], pt_col_p0113, (weight_cols or {}).get("p0113"))
         s_p016, w_p016 = select(df_p016, cols["p016"], pt_col_p016, (weight_cols or {}).get("p016"))
         s_p03,  w_p03  = select(df_p03,  cols["p03"],  pt_col_p03,  (weight_cols or {}).get("p03"))
         s_p045, w_p045 = select(df_p045, cols["p045"], pt_col_p045, (weight_cols or {}).get("p045"))
 
-        series_list = [s for s in [s_ref, s_p016, s_p03, s_p045] if not s.empty]
+        series_list = [s for s in [s_ref, s_p0113, s_p016, s_p03, s_p045] if not s.empty]
         if not series_list:
             print(f"[skip] No data for '{suf}' after pT filter.")
             continue
@@ -437,6 +468,8 @@ def plot_across_four_lists(
         plt.figure(figsize=(8,4))
         if not s_ref.empty:
             plt.hist(s_ref.values,  bins=bin_edges, histtype="step", label=label_ref,  density=density, weights=(w_ref.values if w_ref is not None else None))
+        if not s_p0113.empty:
+            plt.hist(s_p0113.values, bins=bin_edges, histtype="step", label=label_p0113, density=density, weights=(w_p0113.values if w_p0113 is not None else None))
         if not s_p016.empty:
             plt.hist(s_p016.values, bins=bin_edges, histtype="step", label=label_p016, density=density, weights=(w_p016.values if w_p016 is not None else None))
         if not s_p03.empty:
@@ -445,22 +478,21 @@ def plot_across_four_lists(
             plt.hist(s_p045.values, bins=bin_edges, histtype="step", label=label_p045, density=density, weights=(w_p045.values if w_p045 is not None else None))
 
         # Labels
-        # try full-name first from whichever exists, else fall back to suffix
-        sample_full = next((c for c in [cols["ref"], cols["p016"], cols["p03"], cols["p045"]] if c is not None), None)
-        x_label = (
-            (var_latex_map or {}).get(sample_full) or
-            (var_latex_map or {}).get(suf) or
-            suf
-        )
-        plt.title(f"{x_label} across triangle sizes", fontsize=14)
+        sample_full = next((c for c in [cols["ref"], cols["p0113"], cols["p016"], cols["p03"], cols["p045"]] if c is not None), None)
+        suf_label   = suffix_labels.get(suf)  # e.g. 'pt' -> '$p_T$ [GeV]'
+        x_label     = suf_label or (var_latex_map or {}).get(sample_full, suf)
         plt.xlabel(x_label, fontsize=12)
+        plt.yscale('log')
         plt.ylabel("Normalized Frequency" if density else "Entries", fontsize=12)
-        if logy: plt.yscale("log")
         plt.legend()
         plt.tight_layout()
-
+        fig = plt.gcf()
+        fig.text(0.01, 0.98, r"$\bf{CMS}$  $\it{Simulation}$", ha="left", va="top", fontsize=15)
+        fig.text(0.98, 0.98, "14 TeV",                 ha="right", va="top", fontsize=14)
+        plt.subplots_adjust(top=0.90)
         out = os.path.join(plots_dir, f"{suf}_across_triangles.png")
         plt.savefig(out, dpi=300)
         print(f"Saved: {out}")
         plt.show()
         plt.close()
+
