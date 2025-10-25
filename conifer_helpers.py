@@ -258,7 +258,7 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
     X_csim = np.ascontiguousarray(qtest_scaled.to_numpy(dtype=np.float32))
     logits_hdl = cnf_model.decision_function(X_csim)
     logits_hdl = np.asarray(logits_hdl, dtype=float)
-    prob_hdl = softmax(logits_hdl)
+    prob_hdl = _softmax(logits_hdl)
     ypred_hdl = np.argmax(prob_hdl, axis=1)
 
     # Build (csim) to generate reports; some flows create util.rpt on compile+build
