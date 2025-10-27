@@ -9,6 +9,7 @@
 *.rtti
 *.type
 *.ini
+*.pdf
 *.edf
 *.reloc
 *.rlx

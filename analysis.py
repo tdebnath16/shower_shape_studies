@@ -137,29 +137,35 @@ def plot_delta_r_3d_two_dfs(df, label, plots_dir, eta_col='cl3d_eta', energy_col
     print(f"Saved plot as: {filename}")
     plt.show()
 
-def plot_histograms(df_signal, df_bg1, df_bg2, variables, label_signal, label_bg1, label_bg2, plots_dir, var_latex_map, prefix, num_bins=40, cl3d_pt_range=(20, 200), figsize=(8, 4)):
+def plot_histograms(df_signal, df_bg1, df_bg2, df_bg3, variables, label_signal, label_bg1, label_bg2, label_bg3, plots_dir, var_latex_map, prefix, num_bins=40, cl3d_pt_range=(20, 200), figsize=(8, 4)):
     df_signal_filtered = df_signal[(df_signal[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_signal[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
     df_bg1_filtered = df_bg1[(df_bg1[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg1[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
     df_bg2_filtered = df_bg2[(df_bg2[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg2[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
+    df_bg3_filtered = df_bg3[(df_bg3[f'cl3d_{prefix}_pt'] >= cl3d_pt_range[0]) & (df_bg3[f'cl3d_{prefix}_pt'] <= cl3d_pt_range[1])]
     for var in variables:
         plt.figure(figsize=figsize)
         if df_signal_filtered[var].dtype in ['int64', 'int32']:
-            min_value = min(df_signal_filtered[var].min(), df_bg1_filtered[var].min(), df_bg2_filtered[var].min())
-            max_value = max(df_signal_filtered[var].max(), df_bg1_filtered[var].max(), df_bg2_filtered[var].max())
+            min_value = min(df_signal_filtered[var].min(), df_bg1_filtered[var].min(), df_bg2_filtered[var].min(), df_bg3_filtered[var].min())
+            max_value = max(df_signal_filtered[var].max(), df_bg1_filtered[var].max(), df_bg2_filtered[var].max(), df_bg3_filtered[var].max())
             bin_edges = np.arange(min_value - 0.5, max_value + 1.5, 1)
         else:
-            min_value = min(df_signal_filtered[var].min(), df_bg1_filtered[var].min(), df_bg2_filtered[var].min())
-            max_value = max(df_signal_filtered[var].max(), df_bg1_filtered[var].max(), df_bg2_filtered[var].max())
+            min_value = min(df_signal_filtered[var].min(), df_bg1_filtered[var].min(), df_bg2_filtered[var].min(), df_bg3_filtered[var].min())
+            max_value = max(df_signal_filtered[var].max(), df_bg1_filtered[var].max(), df_bg2_filtered[var].max(), df_bg3_filtered[var].max())
             bin_width = (max_value - min_value) / num_bins
             bin_edges = np.arange(min_value - bin_width / 2, max_value + bin_width / 2, bin_width)
         plt.hist(df_signal_filtered[var], histtype='step', bins=bin_edges, color='b', linewidth=1.5, label=label_signal, density=True)
         plt.hist(df_bg1_filtered[var], histtype='step', bins=bin_edges, color='g', linewidth=1.5, label=label_bg1, density=True)
         plt.hist(df_bg2_filtered[var], histtype='step', bins=bin_edges, color='r', linewidth=1.5, label=label_bg2, density=True)
+        plt.hist(df_bg3_filtered[var], histtype='step', bins=bin_edges, color='o', linewidth=1.5, label=label_bg3, density=True)
         plt.title("Cluster " + f"{var_latex_map.get(var, var)} Histogram", fontsize=14)
         plt.xlabel(var_latex_map.get(var, var), fontsize=12)
         plt.ylabel('Normalized Frequency', fontsize=12)
         plt.legend()
         plt.tight_layout()
+        fig = plt.gcf()
+        fig.text(0.01, 0.98, r"$\bf{CMS}$  $\it{Simulation}$", ha="left", va="top", fontsize=15)
+        fig.text(0.98, 0.98, "14 TeV",                 ha="right", va="top", fontsize=14)
+        plt.subplots_adjust(top=0.90)
         filename = os.path.join(plots_dir, f"{var}_histogram.png")
         plt.savefig(filename, dpi=300)
         print(f"Saved: {filename}")
@@ -490,8 +496,8 @@ def plot_across_five_lists(
         fig.text(0.01, 0.98, r"$\bf{CMS}$  $\it{Simulation}$", ha="left", va="top", fontsize=15)
         fig.text(0.98, 0.98, "14 TeV",                 ha="right", va="top", fontsize=14)
         plt.subplots_adjust(top=0.90)
-        out = os.path.join(plots_dir, f"{suf}_across_triangles.png")
-        plt.savefig(out, dpi=300)
+        out = os.path.join(plots_dir, f"{suf}_across_triangles.pdf")
+        plt.savefig(out)
         print(f"Saved: {out}")
         plt.show()
         plt.close()
