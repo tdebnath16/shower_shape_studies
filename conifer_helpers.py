@@ -3,15 +3,16 @@ import pandas as pd
 import analysis as ana
 import os, time
 import xgboost as xgb
-from sklearn.metrics import accuracy_score, roc_auc_score
-from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, auc
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder, label_binarize
 from pandas.api.types import is_float_dtype, is_integer_dtype
 from math import ceil, log2
 from scipy.special import softmax
 import conifer
 from typing import Optional, Dict, Mapping, Union
 from pathlib import Path
-import os, glob, re, xml.etree.ElementTree as ET
+import os, datetime, glob, re, xml.etree.ElementTree as ET
+import matplotlib.pyplot as plt
 
 def maxbits(series: pd.Series, maxbit: int) -> int:
     if is_float_dtype(series):
@@ -79,9 +80,11 @@ def transform_quantizers(X: pd.DataFrame, qspec: dict, keep_nan_code: int = -1) 
     Q = pd.DataFrame(out, index=X.index)[X.columns]  # preserve column order
     return Q
 
-def count_total_splits(booster: xgb.Booster) -> int:
+def count_total_splits_and_leaves(booster: xgb.Booster) -> int:
     df = booster.trees_to_dataframe()
-    return int((df['Feature'] != 'Leaf').sum())
+    n_splits = int((df['Feature'] != 'Leaf').sum())
+    n_leaves = int((df['Feature'] == 'Leaf').sum())
+    return n_splits, n_leaves
 
 def timed_decision_function(model, X_np):
     t0 = time.perf_counter()
@@ -89,106 +92,191 @@ def timed_decision_function(model, X_np):
     dt = time.perf_counter() - t0
     return np.asarray(logits), dt
 
-def parse_hls_reports(output_dir: Union[str, Path]):
-    out = dict(LUT=np.nan, FF=np.nan, BRAM=np.nan, DSP=np.nan,
-               LatencyMin=np.nan, LatencyMax=np.nan, Interval=np.nan)
-    outdir = Path(output_dir)
-    rpt_candidates = list(outdir.glob("**/syn/report/*csynth.rpt"))
-    if not rpt_candidates:
-        return out
-
-    rpt = rpt_candidates[0].read_text(errors='ignore')
-
-    def grab(pattern, cast=float):
-        m = re.search(pattern, rpt, flags=re.MULTILINE)
-        return cast(m.group(1)) if m else np.nan
-
-    out['LUT']   = grab(r"^\s*Total\s+LUTs\s*:\s*([\d,]+)", lambda s:int(s.replace(",","")))
-    out['FF']    = grab(r"^\s*Total\s+FFs\s*:\s*([\d,]+)",  lambda s:int(s.replace(",","")))
-    out['BRAM']  = grab(r"^\s*Total\s+BRAM_18K\s*:\s*([\d,]+)", lambda s:int(s.replace(",","")))
-    out['DSP']   = grab(r"^\s*Total\s+DSPs\s*:\s*([\d,]+)",  lambda s:int(s.replace(",","")))
-    out['LatencyMin'] = grab(r"Latency\s*\(cycles\)\s*min\s*=\s*([0-9]+)")
-    out['LatencyMax'] = grab(r"Latency\s*\(cycles\)\s*max\s*=\s*([0-9]+)")
-    out['Interval']   = grab(r"Interval\s*\(II\)\s*=\s*([0-9]+)")
-    return out
-
 def _softmax(logits):
     logits = np.asarray(logits, dtype=float)
     logits -= logits.max(axis=1, keepdims=True)  # numerical stability
     e = np.exp(logits)
     return e / e.sum(axis=1, keepdims=True)
 
-def _parse_lut_from_report(report_path):
-    """Try to extract LUT usage from util.rpt (VHDL backend). Returns int or None."""
+def _parse_luts_from_report(report_path):
+    """
+    Extract 'LUT as Logic' and 'LUT as Memory' (Used) from a Vivado util.rpt.
+    Returns (lut_logic, lut_memory) as ints, or (None, None) if not found.
+    """
+    lut_logic = None
+    lut_memory = None
+
     if not os.path.exists(report_path):
-        return None
+        return lut_logic, lut_memory
+
     with open(report_path, "r") as f:
         lines = f.readlines()
-    try:
-        parts = lines[37].split("|")
-        return int(parts[2])
-    except Exception:
-        pass
+
     for line in lines:
-        if "LUT" in line and "|" in line:
-            try:
-                fields = [s.strip() for s in line.split("|") if s.strip()]
-                for tok in fields:
-                    if tok.isdigit():
-                        return int(tok)
-            except Exception:
+        if ("LUT as Logic" in line or "LUT as Memory" in line) and "|" in line:
+            # Split columns by '|' and strip whitespace
+            parts = [s.strip() for s in line.split("|") if s.strip()]
+            if not parts:
                 continue
-    return None
+            label = parts[0]  # e.g. "LUT as Logic" or "LUT as Memory"
+            if len(parts) >= 2:
+                try:
+                    used = int(parts[1])
+                except ValueError:
+                    continue
+                if label == "LUT as Logic":
+                    lut_logic = used
+                elif label == "LUT as Memory":
+                    lut_memory = used
+        if (lut_logic is not None) and (lut_memory is not None):
+            break
+    return lut_logic, lut_memory
 
-def inspect_hls_reports(output_dir: str):
-    print(f"[inspect] OutputDir = {output_dir}")
-    report_dirs = []
-    for root, dirs, files in os.walk(output_dir):
-        if root.endswith(os.path.join('solution1','syn','report')):
-            report_dirs.append(root)
-    if not report_dirs:
-        print("[inspect] No solution1/syn/report dirs found.")
-        return
+def auc_photon_vs_each(y_true: np.ndarray, y_score: np.ndarray, photon_class: int = 0) -> float:
+    y_true = np.asarray(y_true)
+    y_score = np.asarray(y_score)
+    classes = np.unique(y_true)
+    aucs = []
+    for k in classes:
+        if k == photon_class:
+            continue
+        m = (y_true == photon_class) | (y_true == k)
+        if m.sum() < 2:
+            continue
+        y_bin = (y_true[m] == photon_class).astype(int)
+        # Use the photon probability as the score
+        scores = y_score[m, photon_class]
+        # Need both positives and negatives
+        if y_bin.sum() == 0 or y_bin.sum() == len(y_bin):
+            continue
+        fpr, tpr, _ = roc_curve(y_bin, scores)
+        aucs.append(auc(fpr, tpr))
+    return float(np.mean(aucs)) if aucs else np.nan
 
-    for d in report_dirs:
-        print(f"[inspect] Report dir: {d}")
-        files = sorted(glob.glob(os.path.join(d, '*')))
-        for f in files:
-            print("  -", os.path.basename(f))
+def plot_roc_curves_sw_hdl(
+    y_true, y_score_sw, y_score_hdl, class_names, title, out_path, photon_class=0
+):
+    """
+    Plot ROC curves for Photon-vs-X, overlaying SW (dashed) and HDL (solid).
+    Saves as <out_path>.pdf/.png
+    """
+    y_true = np.asarray(y_true)
+    y_score_sw  = np.asarray(y_score_sw)
+    y_score_hdl = np.asarray(y_score_hdl)
+    photon_name = class_names[photon_class]
 
-        # XML: dump <Resources> attributes
-        for xml in glob.glob(os.path.join(d, '*_csynth.xml')):
-            print(f"[inspect] XML: {os.path.basename(xml)}")
-            try:
-                root = ET.parse(xml).getroot()
-                for res in root.iter('Resources'):
-                    print("    Resources attribs:", dict(res.attrib))
-            except Exception as e:
-                print("    (XML parse error)", e)
+    plt.figure(figsize=(7.2, 6.2))
+    ax = plt.gca()
+    aucs_sw, aucs_hdl = [], []
 
-        # RPT: grep resource lines and show exact labels
-        for rpt in glob.glob(os.path.join(d, '*_csynth.rpt')):
-            print(f"[inspect] RPT: {os.path.basename(rpt)}")
-            txt = open(rpt, 'r', errors='ignore').read()
-            # print a few lines around "Area" section if present
-            area_idx = txt.lower().find('area')
-            if area_idx != -1:
-                snippet = txt[max(0, area_idx-300): area_idx+800]
-                print("    --- Area snippet ---")
-                print(snippet)
-                print("    --------------------")
-            # extract label:value pairs (very permissive)
-            for pat in [r'(CLB\s+LUTs)\s*:\s*([\d,]+)',
-                        r'(LUTs?)\s*:\s*([\d,]+)',
-                        r'(LUT\s+as\s+Logic)\s*:\s*([\d,]+)',
-                        r'(FFs?)\s*:\s*([\d,]+)',
-                        r'(CLB\s+Registers)\s*:\s*([\d,]+)',
-                        r'(DSP48\w*)\s*:\s*([\d,]+)',
-                        r'(BRAM_?18K)\s*:\s*([\d,]+)',
-                        r'(BRAMs?)\s*:\s*([\d,]+)',
-                        r'(URAM\w*)\s*:\s*([\d,]+)']:
-                for m in re.finditer(pat, txt, flags=re.IGNORECASE):
-                    print(f"    {m.group(1)} -> {m.group(2)}")
+    for i, name in enumerate(class_names):
+        if i == photon_class: 
+            continue
+        m = (y_true == photon_class) | (y_true == i)
+        if m.sum() < 2:
+            continue
+        y_bin = (y_true[m] == photon_class).astype(int)
+
+        # Photon probability is the score
+        s_sw  = y_score_sw[m,  photon_class]
+        s_hdl = y_score_hdl[m, photon_class]
+
+        # Need both positives & negatives
+        if (y_bin.sum() == 0) or (y_bin.sum() == len(y_bin)):
+            continue
+
+        fpr_sw,  tpr_sw,  _ = roc_curve(y_bin, s_sw)
+        fpr_hdl, tpr_hdl, _ = roc_curve(y_bin, s_hdl)
+
+        auc_sw  = auc(fpr_sw,  tpr_sw)
+        auc_hdl = auc(fpr_hdl, tpr_hdl)
+
+        aucs_sw.append(auc_sw)
+        aucs_hdl.append(auc_hdl)
+
+        # Plot HDL solid, SW dashed
+        ax.plot(fpr_hdl, tpr_hdl, lw=2.0, label=f"{photon_name} vs {name} (HDL AUC={auc_hdl:.3f})")
+        ax.plot(fpr_sw,  tpr_sw,  lw=1.8, ls="--", label=f"{photon_name} vs {name} (SW  AUC={auc_sw:.3f})")
+
+    mean_sw  = np.mean(aucs_sw)  if aucs_sw  else float("nan")
+    mean_hdl = np.mean(aucs_hdl) if aucs_hdl else float("nan")
+
+    ax.plot([0,1],[0,1], "--", color="gray", alpha=0.7, lw=1.2)
+    ax.set_xscale('log')#(0.0, 1.0); ax.set_ylim(0.0, 1.02)
+    ax.set_yscale('log')
+    ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate")
+    ax.set_title(f"{title}\nMean Photon-vs-X AUC — HDL={mean_hdl:.3f}, SW={mean_sw:.3f}", pad=10)
+
+    # CMS header
+    plt.text(0.02, 1.02, r"$\bf{CMS}$  $\it{Simulation}$",
+             ha="left", va="bottom", transform=ax.transAxes, fontsize=12)
+    plt.text(0.98, 1.02, "14 TeV",
+             ha="right", va="bottom", transform=ax.transAxes, fontsize=13)
+
+    plt.legend(loc="lower right", frameon=False, fontsize=9)
+    plt.tight_layout()
+    plt.savefig(out_path + ".pdf", bbox_inches="tight")
+    plt.savefig(out_path + ".png", dpi=220, bbox_inches="tight")
+    plt.close()
+
+def plot_score_distributions_sw_hdl(
+    y_true, y_score_sw, y_score_hdl, class_names, out_path, photon_class=0, bins=40
+):
+    """
+    For each non-photon class X: histogram the photon probability p(photon)
+    for samples in {Photon, X}, overlaying SW (dashed edge) and HDL (solid edge).
+    Saves a multi-panel figure.
+    """
+    y_true = np.asarray(y_true)
+    y_score_sw  = np.asarray(y_score_sw)
+    y_score_hdl = np.asarray(y_score_hdl)
+    photon_name = class_names[photon_class]
+
+    # Collect non-photon classes present
+    others = [i for i in range(len(class_names)) if i != photon_class]
+
+    n = len(others)
+    ncols = 2
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, 4.2*nrows), squeeze=False)
+    axes = axes.ravel()
+
+    for ax, i in zip(axes, others):
+        name = class_names[i]
+        m = (y_true == photon_class) | (y_true == i)
+        if m.sum() < 2:
+            ax.set_axis_off()
+            continue
+
+        y_bin = (y_true[m] == photon_class).astype(int)
+        s_sw  = y_score_sw[m,  photon_class]
+        s_hdl = y_score_hdl[m, photon_class]
+
+        # Plot histograms (density)
+        ax.hist(s_sw[y_bin==1],  bins=bins, density=True, histtype="step", lw=1.8, label=f"{photon_name} (SW)",  alpha=0.9)
+        ax.hist(s_hdl[y_bin==1], bins=bins, density=True, histtype="step", lw=2.2, label=f"{photon_name} (HDL)", alpha=0.9)
+
+        ax.hist(s_sw[y_bin==0],  bins=bins, density=True, histtype="step", lw=1.8, ls="--", label=f"{name} (SW)",  alpha=0.9)
+        ax.hist(s_hdl[y_bin==0], bins=bins, density=True, histtype="step", lw=2.2, ls="-",  label=f"{name} (HDL)", alpha=0.9)
+
+        ax.set_xlabel("Score = P(photon)")
+        ax.set_ylabel("Density")
+        ax.set_title(f"{photon_name} vs {name}: score distributions")
+
+        # Optional: vertical lines at 0.5 threshold
+        ax.axvline(0.5, color="gray", lw=1.0, ls=":")
+
+        ax.legend(loc="best", frameon=False, fontsize=9)
+
+    # Turn off any unused axes
+    for j in range(len(others), len(axes)):
+        axes[j].set_axis_off()
+
+    fig.suptitle("Photon vs X — SW vs HDL score distributions", y=0.995)
+    fig.tight_layout()
+    fig.savefig(out_path + ".pdf", bbox_inches="tight")
+    fig.savefig(out_path + ".png", dpi=220, bbox_inches="tight")
+    plt.close(fig)
 
 def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_train, X_test, y_test):
     t0 = time.time()
@@ -210,48 +298,47 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
         qtest[feat]  = ana.quantize(X_test[feat],  precision, 'uniform', fmin, fmax)
 
     # Normalize to [0, 1) for fixed-point ap_fixed<precision,0> 
-    max_range = 1.0 - 1.0/(2**precision)
+    max_range = 1.0 - 1.0/(2**precision-1)
     scaler = MinMaxScaler(feature_range=(0.0, max_range))
     qtrain_scaled = pd.DataFrame(scaler.fit_transform(qtrain), columns=X_train.columns, index=X_train.index)
     qtest_scaled  = pd.DataFrame(scaler.transform(qtest),     columns=X_test.columns,  index=X_test.index)
 
     # Train XGBoost (multi-class, softprob) 
     model = xgb.XGBClassifier(
-        objective='multi:softprob',
+        objective='multi:softmax',
         num_class=n_classes,
         max_depth=depth,
         n_estimators=rounds,
         learning_rate=0.001,
-        eval_metric='mlogloss',
         n_jobs=8,
-        verbosity=1
     )
     model.fit(qtrain_scaled, y_train_enc)
+    booster = model.get_booster()
+    #booster.set_attr(objective="multi:softprob")
 
     # SW metrics
-    prob_sw = model.predict_proba(qtest_scaled)                      # shape (N, K)
+    booster.set_param({'objective': 'multi:softprob', 'num_class': n_classes})
+    prob_sw = booster.predict(xgb.DMatrix(qtest_scaled), output_margin=False)
     ypred_sw = np.argmax(prob_sw, axis=1)
     acc_sw = accuracy_score(y_test_enc, ypred_sw)
     # roc_auc_score needs probability matrix and label vector
     try:
-        auc_sw = roc_auc_score(y_test_enc, prob_sw, multi_class='ovo')
+        auc_sw = auc_photon_vs_each(y_test_enc, prob_sw, photon_class=0)
     except ValueError:
         # If a class is absent in the test fold, AUC may fail; fall back to NaN
         auc_sw = np.nan
 
     # Conifer (VHDL backend for VU13P) ----
     cfg = conifer.backends.vhdl.auto_config()
-    proj_dir = f"hdlprojects/prj_vhdl_multiclass_{precision}_{depth}_{rounds}_{iteration}"
-    if os.path.exists(proj_dir):
-        ana.remove_folder(proj_dir)
+    proj_dir = 'conifer_VHDL_4I_lessrounds/prj_{}'.format(int(datetime.datetime.now().timestamp()))
     os.makedirs(proj_dir, exist_ok=True)
     cfg['OutputDir']   = proj_dir
-    cfg['XilinxPart']  = 'xcvu13p-fhgb2104-2L-e'#VU13P
-    cfg['Precision']   = f"ap_fixed<{precision},0>"   # inputs are [0,1)
-    cfg['ClockPeriod'] = 3
-    cfg['ProjectName'] = 'hgcal_multiclass'
+    cfg['XilinxPart']  = 'xcvu13p-fhgb2104-2LV-e'#VU13P
+    cfg['Precision']='ap_fixed<{},{}>'.format(precision, 4) 
+    print(cfg['Precision'])
     booster = model.get_booster()
     cnf_model = conifer.converters.convert_from_xgboost(booster, cfg)
+    cnf_model.write()
     cnf_model.compile()
 
     # CSIM logits on test set (float32 contiguous array is safest)
@@ -262,18 +349,19 @@ def train_quantized_multiclass(precision, depth, rounds, iteration, X_train, y_t
     ypred_hdl = np.argmax(prob_hdl, axis=1)
 
     # Build (csim) to generate reports; some flows create util.rpt on compile+build
-    cnf_model.build(csim=True)
+    cnf_model.build(csim=False, synth=True, vsynth=True)
 
     # ---- Step 5: HDL metrics + LUTs ----
     acc_hdl = accuracy_score(y_test_enc, ypred_hdl)
     try:
-        auc_hdl = roc_auc_score(y_test_enc, prob_hdl, multi_class='ovo')
+        auc_hdl = auc_photon_vs_each(y_test_enc, prob_hdl, photon_class=0)
     except ValueError:
         auc_hdl = np.nan
 
-    lut = _parse_lut_from_report(os.path.join(cfg['OutputDir'], 'util.rpt'))
-    splits = count_total_splits(booster)
+    lut_logic, lut_memory = _parse_luts_from_report(os.path.join(cfg['OutputDir'], 'util.rpt'))
+    splits, leaves = count_total_splits_and_leaves(booster)
     dur = time.time() - t0
     print(f"[{iteration}] Done: acc_sw={acc_sw:.4f}, auc_sw={auc_sw:.4f}, "
-          f"acc_hdl={acc_hdl:.4f}, auc_hdl={auc_hdl:.4f}, LUT={lut}, splits ={splits}, time={dur:.2f}s")
-    return (precision, depth, rounds, acc_sw, auc_sw, acc_hdl, auc_hdl, lut, splits, dur)
+          f"acc_hdl={acc_hdl:.4f}, auc_hdl={auc_hdl:.4f}, LUT_logic={lut_logic}, LUT_memory={lut_memory}, splits ={splits}, leaves = {leaves}, time={dur:.2f}s"
+          )
+    return (precision, depth, rounds, acc_sw, auc_sw, acc_hdl, auc_hdl, lut_logic, lut_memory, splits, leaves, dur)

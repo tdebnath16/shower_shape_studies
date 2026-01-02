@@ -20,6 +20,15 @@ import conifer
 from typing import Optional, Dict, Mapping, Union
 from pathlib import Path
 
+import logging
+logging.getLogger().setLevel(logging.DEBUG)
+
+json_root = pathlib.Path("json/include").resolve()   # adjust to your clone
+assert (json_root / "nlohmann" / "json.hpp").exists(), json_root
+os.environ["JSON_ROOT"] = str(json_root)
+print("JSON_ROOT =", os.environ["JSON_ROOT"])
+
+
 triangle = ["Ref", "p0113Tri", "p016Tri", "p03Tri", "p045Tri"]
 cl3d_colname = {
     "Ref":   "cl3d_Ref",
@@ -62,12 +71,12 @@ PU_cl3d = {
 }
 parser = argparse.ArgumentParser()
 parser.add_argument("--tri", choices=triangle, default="p016Tri", help="Triangle size / cl3d variant to use (default: p016).")
-parser.add_argument("--prec-min", type=int, default=5)
-parser.add_argument("--prec-max", type=int, default=14)
-parser.add_argument("--depth-min", type=int, default=2)
-parser.add_argument("--depth-max", type=int, default=5)
+parser.add_argument("--prec-min", type=int, default=6)
+parser.add_argument("--prec-max", type=int, default=19)
+parser.add_argument("--depth-min", type=int, default=3)
+parser.add_argument("--depth-max", type=int, default=7)
 parser.add_argument("--rounds-min", type=int, default=5)
-parser.add_argument("--rounds-max", type=int, default=20)
+parser.add_argument("--rounds-max", type=int, default=21)
 args = parser.parse_args()
 
 def load_variant(tri):
@@ -111,27 +120,27 @@ discrete_base = ["showerlength", "coreshowerlength", "firstlayer"]
 discrete_cols = [f"{cl3d_col}_{name}" for name in discrete_base]
 for c in (set(discrete_cols) & set(X_train.columns)):
     # nullable int is fine; we coerce to float internally when learning edges
-    X_train.loc[:, c] = X_train[c].astype('Int64')
-    X_test.loc[:, c]  = X_test[c].astype('Int64')
+    X_train.loc[:, c] = X_train[c].astype('Int32')
+    X_test.loc[:, c]  = X_test[c].astype('Int32')
 
 # optionally specify per-feature bit budgets (otherwise computed via maxbits)
 per_feature_bits = None  # e.g., {'cl3d_sigmaRR': 6, 'cl3d_emaxe': 5, ...} ---- this is to be cross checked!
 
 # fit on training set only
-qspec = cf_helper.fit_quantizers(X_train, maxbit = 14, float_method = 'percentile', int_method = 'uniform', per_feature_bits = per_feature_bits)
+#qspec = cf_helper.fit_quantizers(X_train, maxbit = 14, float_method = 'percentile', int_method = 'uniform', per_feature_bits = per_feature_bits)
 # transform train/test -> integer codes; cast to float32 for models
-Q_train = cf_helper.transform_quantizers(X_train, qspec).astype('float32')
-Q_test  = cf_helper.transform_quantizers(X_test,  qspec).astype('float32')
+#Q_train = cf_helper.transform_quantizers(X_train, qspec).astype('float32')
+#Q_test  = cf_helper.transform_quantizers(X_test,  qspec).astype('float32')
 
 # results table (SW = XGBoost in Python; HDL = Conifer-generated model)
-result_cols = ["precision","depth","rounds","acc_sw","auc_sw","acc_hdl","auc_hdl","LUT","splits","time_s"]
+result_cols = ["precision","depth","rounds","acc_sw","auc_sw","acc_hdl","auc_hdl","LUT_logic","LUT_memory","splits", "leaves", "time_s"]
 result_table = pd.DataFrame(columns=result_cols)
 iteration = 0
 for prec in range(args.prec_min, args.prec_max, 1):
     for depth in range(args.depth_min, args.depth_max, 1):
         for rounds in range(args.rounds_min, args.rounds_max, 1):
-            row = cf_helper.train_quantized_multiclass(prec, depth, rounds, iteration, Q_train, y_train, Q_test, 
+            row = cf_helper.train_quantized_multiclass(prec, depth, rounds, iteration, X_train, y_train, X_test, 
                                                        y_test)
             result_table.loc[len(result_table)] = row
-            result_table.to_csv("conifer_multiclass_opti.csv", index=False)
+            result_table.to_csv("conifer_multiclass_opti_4Integer_trees5to20.csv", index=False)
             iteration += 1
