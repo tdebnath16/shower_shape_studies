@@ -29,7 +29,8 @@ Sample_cfg = {
     "photonPU200": {
         "tag": "newalgo",
         "eta_range": (1.6, 2.8),
-        "gen": {"pt_min": 20.0},
+        "gen": {"pt_min": 20.0,
+                "pt_max": 100.0},
         "genpart": {
             "reachedEE": 2,
             "gen_not": -1,
@@ -47,8 +48,10 @@ Sample_cfg = {
         "eta_range": (1.6, 2.8),
         "gen": {
             "pt_min": 20.0,
+            "pt_max": 100.0,
             "status": 1,
-            "pdg_id": 22  },
+            "pdgid": 22, 
+        },
         "genpart": {
             "reachedEE": 2,
             "gen_not": -1,
@@ -59,8 +62,38 @@ Sample_cfg = {
             "pt_min": 5.0,
             "pt_max": 100.0,
             "eta_in_window": True,
-        },},
-    "pionPU200": {},
+        },
+    },
+    "pionPU200": {
+        "tag": "newalgo",
+        "eta_range": (1.6, 2.8),
+        "gen": {
+            "pt_min": 20.0,
+            "pt_max": 100.0,
+            "status": 1,
+            #"pdg_id": 22,
+        },
+        "genpart": {
+            "reachedEE": 2,
+            "gen_not": -1,
+            "sign_match_to_gen": True,
+            "exeta_in_gen_eta_window": True,  # apply same eta window on genpart_exeta
+        },
+        "cl3d": {
+            "pt_min": 5.0,
+            "pt_max": 100.0,
+            "eta_in_window": True,
+        },
+    },
+    "PU200": {
+        "tag": "newalgo",
+        "eta_range": (1.6, 2.8),
+        "cl3d": {
+            "pt_min": 5.0,
+            "pt_max": 100.0,
+            "eta_in_window": True,
+        },
+    },
 }
 
 def _branches_for_prefix(prefix: str) -> list[str]:
@@ -78,7 +111,7 @@ def in_endcap_window(eta, eta0=1.6, eta1=2.8):
 def apply_gen_cuts(df_gen: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     eta0, eta1 = cfg["eta_range"]
     gen_cfg = cfg.get("gen", {})
-    m = (df_gen["gen_pt"] > gen_cfg.get("pt_min", -1e9)) & in_endcap_window(df_gen["gen_eta"], eta0, eta1)
+    m = (df_gen["gen_pt"] > gen_cfg.get("pt_min", -1e9)) & (df_gen["gen_pt"] < gen_cfg.get("pt_max", 1e18)) & in_endcap_window(df_gen["gen_eta"], eta0, eta1)
     if "pdgid" in gen_cfg:
         m &= (df_gen["gen_pdgid"] == gen_cfg["pdgid"])
     if "status" in gen_cfg:
@@ -100,21 +133,25 @@ def apply_genpart_cuts(df_genpart: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 def load_and_filter(tree, sample_key: str):
     cfg = Sample_cfg[sample_key]
     eta0, eta1 = cfg["eta_range"]
-    df_gen, df_genpart = load_gen_dfs(tree)
-    df_gen_f = apply_gen_cuts(df_gen, cfg)
-    df_genpart_f = apply_genpart_cuts(df_genpart, cfg)
-    df_gen_merged = ana.load_and_filter_hdf(df_gen_f, df_genpart_f)
-    # +EE ↔ +EE and -EE ↔ -EE matching 
-    gp_cfg = cfg.get("genpart", {})
-    if gp_cfg.get("sign_match_to_gen", True):
-        # require both etas with same sign
-        m_sign = (((df_gen_merged["gen_eta"] * df_gen_merged["genpart_exeta"]) > 0.0))
-        df_gen_merged = df_gen_merged[m_sign]
-
+    has_gen = ("gen" in cfg) or ("genpart" in cfg)
+    if has_gen:
+        df_gen, df_genpart = load_gen_dfs(tree)
+        df_gen_f = apply_gen_cuts(df_gen, cfg)
+        df_genpart_f = apply_genpart_cuts(df_genpart, cfg)
+        df_gen_merged = ana.load_and_filter_hdf(df_gen_f, df_genpart_f)
+        # +EE ↔ +EE and -EE ↔ -EE matching 
+        gp_cfg = cfg.get("genpart", {})
+        if gp_cfg.get("sign_match_to_gen", True):
+            # require both etas with same sign
+            m_sign = (((df_gen_merged["gen_eta"] * df_gen_merged["genpart_exeta"]) > 0.0))
+            df_gen_merged = df_gen_merged[m_sign]
+    else:
+        #For PU200: no gen info needed
+        df_gen_merged = pd.DataFrame()
+    
     cl_cfg = cfg.get("cl3d", {})
     pt_min = cl_cfg.get("pt_min", -1e9)
     pt_max = cl_cfg.get("pt_max",  1e18)
-
     out_cl = {}
     for algo_name, prefix in algos.items():
         branches = _branches_for_prefix(prefix)
@@ -152,7 +189,7 @@ def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, samp
 
     # combine gen
     gen_dfs = [r[0] for r in results]
-    combined_gen_df = pd.concat(gen_dfs, ignore_index=True)
+    combined_gen_df = pd.concat(gen_dfs, ignore_index=True) if gen_dfs else pd.DataFrame()
 
     # combine cl3d per algo
     combined_cl = {}
@@ -163,7 +200,7 @@ def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, samp
     # save
     base = f"{sample_key}_{tag}"
     gen_output_path = os.path.join(output_dir, f"{base}_gen.h5")
-    combined_gen_df.to_hdf(gen_output_path, key="gen", mode="w")
+    combined_gen_df.to_hdf(gen_output_path, key="gen", mode="w") if gen_dfs else pd.DataFrame()
 
     for algo, df in combined_cl.items():
         out_path = os.path.join(output_dir, f"{base}_cl3d_{algo}.h5")
@@ -178,7 +215,7 @@ if __name__ == "__main__":
     bg_folder = "l1tHGCalTriggerNtuplizer"
     tree_name = "HGCalTriggerNtuple"
     output_dir = "/data/data.polcms/cms/debnath/HGCAL/CMSSW_14_0_5/src/shower_shape_studies/samples"
-    sample_key = "photonPU200"
-    filelist = "filelists/photonPU200_newalgo.txt"
+    sample_key = "PU200"
+    filelist = "filelists/PU200_newalgo.txt"
 
     process_files_parallel(filelist_path=filelist, bg_folder=bg_folder, tree_name=tree_name, output_dir=output_dir, sample_key=sample_key, num_processes=50,)
