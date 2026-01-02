@@ -1,163 +1,184 @@
 import uproot
+import numpy as np
 import awkward as ak
 import pandas as pd
 from multiprocessing import Pool
 import analysis as ana
+import os
 
+algos = {
+    "Ref":   "cl3d_Ref",
+    "p0113": "cl3d_p0113Tri",
+    "p016":  "cl3d_p016Tri",
+    "p03":   "cl3d_p03Tri",
+    "p045":  "cl3d_p045Tri",
+}
+cl3d_columns = [
+    "energy", "eta", "pt", "phi","showerlength", "coreshowerlength",
+    "firstlayer", "maxlayer", "emaxe", "varrr", "varee", "varzz", "varpp",
+    "hoe", "meanz", "eot", "first1layers", "first3layers", "first5layers",
+    "firstHcal1layers", "firstHcal3layers", "firstHcal5layers", "last1layers", "last3layers", "last5layers",
+    "emax1layers", "emax3layers", "emax5layers", "ebm0", "ebm1", "hbm",
+]
+cl3d_hw_columns = [
+    "hw_e", "hw_e_em", "hw_eta", "hw_phi", "hw_showerLength", "hw_coreShowerLength",
+    "hw_firstLayer", "hw_lastLayer", "hw_sigma_roz", "hw_sigma_eta", "hw_sigma_z", "hw_sigma_phi",
+    "hw_hoe", "hw_z", "hw_fractionInCE_E", "hw_fractionInCoreCE_E", "hw_fractionInEarlyCE_E",
+]
+Sample_cfg = {
+    "photonPU200": {
+        "tag": "newalgo",
+        "eta_range": (1.6, 2.8),
+        "gen": {"pt_min": 20.0},
+        "genpart": {
+            "reachedEE": 2,
+            "gen_not": -1,
+            "sign_match_to_gen": True,
+            "exeta_in_gen_eta_window": True,  # apply same eta window on genpart_exeta
+        },
+        "cl3d": {
+            "pt_min": 5.0,
+            "pt_max": 100.0,
+            "eta_in_window": True,
+        },
+    },
+    "qcdPU200":  {
+        "tag": "newalgo",
+        "eta_range": (1.6, 2.8),
+        "gen": {
+            "pt_min": 20.0,
+            "status": 1,
+            "pdg_id": 22  },
+        "genpart": {
+            "reachedEE": 2,
+            "gen_not": -1,
+            "sign_match_to_gen": True,
+            "exeta_in_gen_eta_window": True,  # apply same eta window on genpart_exeta
+        },
+        "cl3d": {
+            "pt_min": 5.0,
+            "pt_max": 100.0,
+            "eta_in_window": True,
+        },},
+    "pionPU200": {},
+}
 
-# Function to load and filter signal tree
-def load_and_filter_signal_tree(tree, filter_pt=20, eta_range=(1.6, 2.8), cl_pt_threshold=20):
-    # Load gen variables
-    df_gen = ak.to_dataframe(tree.arrays(
-        library="ak",
-        filter_name=["gen_n", "gen_eta", "gen_phi", "gen_pt", "gen_energy", "gen_status", "gen_pdgid", "event"]))
-    df_genpart = ak.to_dataframe(tree.arrays(
-        library="ak",
-        filter_name=["genpart_exeta", "genpart_exphi", "genpart_gen", "genpart_reachedEE", "event"]))
-    # Load cl3d_p016 variables
-    df_cl3d_Ref = ak.to_dataframe(tree.arrays(library="ak",filter_name=["cl3d_Ref_energy", "cl3d_Ref_eta", "cl3d_Ref_pt", 
-                                                                         "cl3d_Ref_phi", "cl3d_Ref_showerlength", "cl3d_Ref_coreshowerlength",
-                                                                         "cl3d_Ref_firstlayer", "cl3d_Ref_maxlayer", "cl3d_Ref_emaxe",
-                                                                         "cl3d_Ref_varrr", "cl3d_Ref_varee", "cl3d_Ref_varzz", "cl3d_Ref_varpp",
-                                                                         "cl3d_Ref_hoe", "cl3d_Ref_meanz", "cl3d_Ref_eot",
-                                                                         "cl3d_Ref_first1layers", "cl3d_Ref_first3layers", "cl3d_Ref_first5layers",
-                                                                         "cl3d_Ref_firstHcal1layers", "cl3d_Ref_firstHcal3layers", "cl3d_Ref_firstHcal5layers",
-                                                                         "cl3d_Ref_last1layers", "cl3d_Ref_last3layers", "cl3d_Ref_last5layers",
-                                                                         "cl3d_Ref_emax1layers", "cl3d_Ref_emax3layers", "cl3d_Ref_emax5layers",
-                                                                         "cl3d_Ref_ebm0", "cl3d_Ref_ebm1", "cl3d_Ref_hbm", "event"]))
-    df_cl3d_p0113 = ak.to_dataframe(tree.arrays(library="ak",filter_name=["cl3d_p0113Tri_energy", "cl3d_p0113Tri_eta", "cl3d_p0113Tri_pt", 
-                                                                         "cl3d_p0113Tri_phi", "cl3d_p0113Tri_showerlength", "cl3d_p0113Tri_coreshowerlength",
-                                                                         "cl3d_p0113Tri_firstlayer", "cl3d_p0113Tri_maxlayer", "cl3d_p0113Tri_emaxe",
-                                                                         "cl3d_p0113Tri_varrr", "cl3d_p0113Tri_varee", "cl3d_p0113Tri_varzz", "cl3d_p0113Tri_varpp",
-                                                                         "cl3d_p0113Tri_hoe", "cl3d_p0113Tri_meanz", "cl3d_p0113Tri_eot",
-                                                                         "cl3d_p0113Tri_first1layers", "cl3d_p0113Tri_first3layers", "cl3d_p0113Tri_first5layers",
-                                                                         "cl3d_p0113Tri_firstHcal1layers", "cl3d_p0113Tri_firstHcal3layers", "cl3d_p0113Tri_firstHcal5layers",
-                                                                         "cl3d_p0113Tri_last1layers", "cl3d_p0113Tri_last3layers", "cl3d_p0113Tri_last5layers",
-                                                                         "cl3d_p0113Tri_emax1layers", "cl3d_p0113Tri_emax3layers", "cl3d_p0113Tri_emax5layers",
-                                                                         "cl3d_p0113Tri_ebm0", "cl3d_p0113Tri_ebm1", "cl3d_p0113Tri_hbm", "event"]))
-    df_cl3d_p016 = ak.to_dataframe(tree.arrays(library="ak",filter_name=["cl3d_p016Tri_energy", "cl3d_p016Tri_eta", "cl3d_p016Tri_pt", 
-                                                                         "cl3d_p016Tri_phi", "cl3d_p016Tri_showerlength", "cl3d_p016Tri_coreshowerlength",
-                                                                         "cl3d_p016Tri_firstlayer", "cl3d_p016Tri_maxlayer", "cl3d_p016Tri_emaxe",
-                                                                         "cl3d_p016Tri_varrr", "cl3d_p016Tri_varee", "cl3d_p016Tri_varzz", "cl3d_p016Tri_varpp",
-                                                                         "cl3d_p016Tri_hoe", "cl3d_p016Tri_meanz", "cl3d_p016Tri_eot",
-                                                                         "cl3d_p016Tri_first1layers", "cl3d_p016Tri_first3layers", "cl3d_p016Tri_first5layers",
-                                                                         "cl3d_p016Tri_firstHcal1layers", "cl3d_p016Tri_firstHcal3layers", "cl3d_p016Tri_firstHcal5layers",
-                                                                         "cl3d_p016Tri_last1layers", "cl3d_p016Tri_last3layers", "cl3d_p016Tri_last5layers",
-                                                                         "cl3d_p016Tri_emax1layers", "cl3d_p016Tri_emax3layers", "cl3d_p016Tri_emax5layers",
-                                                                         "cl3d_p016Tri_ebm0", "cl3d_p016Tri_ebm1", "cl3d_p016Tri_hbm", "event"]))
-    df_cl3d_p03 = ak.to_dataframe(tree.arrays(library="ak",filter_name=["cl3d_p03Tri_energy", "cl3d_p03Tri_eta", "cl3d_p03Tri_pt", 
-                                                                         "cl3d_p03Tri_phi", "cl3d_p03Tri_showerlength", "cl3d_p03Tri_coreshowerlength",
-                                                                         "cl3d_p03Tri_firstlayer", "cl3d_p03Tri_maxlayer", "cl3d_p03Tri_emaxe",
-                                                                         "cl3d_p03Tri_varrr", "cl3d_p03Tri_varee", "cl3d_p03Tri_varzz", "cl3d_p03Tri_varpp",
-                                                                         "cl3d_p03Tri_hoe", "cl3d_p03Tri_meanz", "cl3d_p03Tri_eot",
-                                                                         "cl3d_p03Tri_first1layers", "cl3d_p03Tri_first3layers", "cl3d_p03Tri_first5layers",
-                                                                         "cl3d_p03Tri_firstHcal1layers", "cl3d_p03Tri_firstHcal3layers", "cl3d_p03Tri_firstHcal5layers",
-                                                                         "cl3d_p03Tri_last1layers", "cl3d_p03Tri_last3layers", "cl3d_p03Tri_last5layers",
-                                                                         "cl3d_p03Tri_emax1layers", "cl3d_p03Tri_emax3layers", "cl3d_p03Tri_emax5layers",
-                                                                         "cl3d_p03Tri_ebm0", "cl3d_p03Tri_ebm1", "cl3d_p03Tri_hbm", "event"]))
-    df_cl3d_p045 = ak.to_dataframe(tree.arrays(library="ak",filter_name=["cl3d_p045Tri_energy", "cl3d_p045Tri_eta", "cl3d_p045Tri_pt", 
-                                                                         "cl3d_p045Tri_phi", "cl3d_p045Tri_showerlength", "cl3d_p045Tri_coreshowerlength",
-                                                                         "cl3d_p045Tri_firstlayer", "cl3d_p045Tri_maxlayer", "cl3d_p045Tri_emaxe",
-                                                                         "cl3d_p045Tri_varrr", "cl3d_p045Tri_varee", "cl3d_p045Tri_varzz", "cl3d_p045Tri_varpp",
-                                                                         "cl3d_p045Tri_hoe", "cl3d_p045Tri_meanz", "cl3d_p045Tri_eot",
-                                                                         "cl3d_p045Tri_first1layers", "cl3d_p045Tri_first3layers", "cl3d_p045Tri_first5layers",
-                                                                         "cl3d_p045Tri_firstHcal1layers", "cl3d_p045Tri_firstHcal3layers", "cl3d_p045Tri_firstHcal5layers",
-                                                                         "cl3d_p045Tri_last1layers", "cl3d_p045Tri_last3layers", "cl3d_p045Tri_last5layers",
-                                                                         "cl3d_p045Tri_emax1layers", "cl3d_p045Tri_emax3layers", "cl3d_p045Tri_emax5layers",
-                                                                         "cl3d_p045Tri_ebm0", "cl3d_p045Tri_ebm1", "cl3d_p045Tri_hbm", "event"]))
-    # Apply filters to gen DataFrame
-    df_gen_filtered = df_gen[(df_gen['gen_pt'] > filter_pt) & 
-                             #(df_gen['gen_pdgid'] == 22) & 
-                             #(df_gen['gen_status'] == 1) & 
-                             (abs(df_gen['gen_eta']) > eta_range[0]) & 
-                             (abs(df_gen['gen_eta']) < eta_range[1]) ]
-    df_genpart_filtered = df_genpart[(df_genpart['genpart_reachedEE'] == 2) & 
-                              (df_genpart['genpart_gen'] == 1) &
-                              (abs(df_genpart['genpart_exeta']) > eta_range[0]) & 
-                              (abs(df_genpart['genpart_exeta']) < eta_range[1])]
-    df_gen_merged = ana.load_and_filter_hdf(df_gen_filtered, df_genpart)
-    # Apply filters to cl3d DataFrame
-    df_cl3d_Ref_filtered = df_cl3d_Ref[(df_cl3d_Ref['cl3d_Ref_pt'] > cl_pt_threshold) & 
-                                (abs(df_cl3d_Ref['cl3d_Ref_eta']) > eta_range[0]) & 
-                                (abs(df_cl3d_Ref['cl3d_Ref_eta']) < eta_range[1])]
-    df_cl3d_p0113_filtered = df_cl3d_p0113[(df_cl3d_p0113['cl3d_p0113Tri_pt'] > cl_pt_threshold) & 
-                                (abs(df_cl3d_p0113['cl3d_p0113Tri_eta']) > eta_range[0]) & 
-                                (abs(df_cl3d_p0113['cl3d_p0113Tri_eta']) < eta_range[1])]
-    df_cl3d_p016_filtered = df_cl3d_p016[(df_cl3d_p016['cl3d_p016Tri_pt'] > cl_pt_threshold) & 
-                                (abs(df_cl3d_p016['cl3d_p016Tri_eta']) > eta_range[0]) & 
-                                (abs(df_cl3d_p016['cl3d_p016Tri_eta']) < eta_range[1])]
-    df_cl3d_p03_filtered = df_cl3d_p03[(df_cl3d_p03['cl3d_p03Tri_pt'] > cl_pt_threshold) & 
-                                (abs(df_cl3d_p03['cl3d_p03Tri_eta']) > eta_range[0]) & 
-                                (abs(df_cl3d_p03['cl3d_p03Tri_eta']) < eta_range[1])]
-    df_cl3d_p045_filtered = df_cl3d_p045[(df_cl3d_p045['cl3d_p045Tri_pt'] > cl_pt_threshold) & 
-                                (abs(df_cl3d_p045['cl3d_p045Tri_eta']) > eta_range[0]) & 
-                                (abs(df_cl3d_p045['cl3d_p045Tri_eta']) < eta_range[1])]
-    
-    return df_gen_merged, df_cl3d_Ref_filtered, df_cl3d_p0113_filtered, df_cl3d_p016_filtered, df_cl3d_p03_filtered, df_cl3d_p045_filtered
+def _branches_for_prefix(prefix: str) -> list[str]:
+    return [f"{prefix}_{s}" for s in (cl3d_columns + cl3d_hw_columns)] + ["event"]
 
-# Worker function for multiprocessing
+def load_gen_dfs(tree) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df_gen = ak.to_dataframe(tree.arrays(library="ak", filter_name=["gen_n", "gen_eta", "gen_phi", "gen_pt", "gen_energy", "gen_status", "gen_pdgid", "event"]))
+    df_genpart = ak.to_dataframe(tree.arrays(library="ak", filter_name=["genpart_exeta", "genpart_exphi", "genpart_gen", "genpart_pid", "genpart_reachedEE", "event"]))
+    return df_gen, df_genpart
+
+def in_endcap_window(eta, eta0=1.6, eta1=2.8):
+    a = np.abs(eta.astype(float))
+    return (a > eta0) & (a < eta1)
+
+def apply_gen_cuts(df_gen: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    eta0, eta1 = cfg["eta_range"]
+    gen_cfg = cfg.get("gen", {})
+    m = (df_gen["gen_pt"] > gen_cfg.get("pt_min", -1e9)) & in_endcap_window(df_gen["gen_eta"], eta0, eta1)
+    if "pdgid" in gen_cfg:
+        m &= (df_gen["gen_pdgid"] == gen_cfg["pdgid"])
+    if "status" in gen_cfg:
+        m &= (df_gen["gen_status"] == gen_cfg["status"])
+    return df_gen[m]
+
+def apply_genpart_cuts(df_genpart: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    eta0, eta1 = cfg["eta_range"]
+    gp_cfg = cfg.get("genpart", {})
+    m = pd.Series(True, index=df_genpart.index)
+    if "reachedEE" in gp_cfg:
+        m &= (df_genpart["genpart_reachedEE"] == gp_cfg["reachedEE"])
+    if "gen_not" in gp_cfg:
+        m &= (df_genpart["genpart_gen"] != gp_cfg["gen_not"])
+    if gp_cfg.get("exeta_in_gen_eta_window", False):
+        m &= in_endcap_window(df_genpart["genpart_exeta"], eta0, eta1)
+    return df_genpart[m]
+
+def load_and_filter(tree, sample_key: str):
+    cfg = Sample_cfg[sample_key]
+    eta0, eta1 = cfg["eta_range"]
+    df_gen, df_genpart = load_gen_dfs(tree)
+    df_gen_f = apply_gen_cuts(df_gen, cfg)
+    df_genpart_f = apply_genpart_cuts(df_genpart, cfg)
+    df_gen_merged = ana.load_and_filter_hdf(df_gen_f, df_genpart_f)
+    # +EE ↔ +EE and -EE ↔ -EE matching 
+    gp_cfg = cfg.get("genpart", {})
+    if gp_cfg.get("sign_match_to_gen", True):
+        # require both etas with same sign
+        m_sign = (((df_gen_merged["gen_eta"] * df_gen_merged["genpart_exeta"]) > 0.0))
+        df_gen_merged = df_gen_merged[m_sign]
+
+    cl_cfg = cfg.get("cl3d", {})
+    pt_min = cl_cfg.get("pt_min", -1e9)
+    pt_max = cl_cfg.get("pt_max",  1e18)
+
+    out_cl = {}
+    for algo_name, prefix in algos.items():
+        branches = _branches_for_prefix(prefix)
+        df_cl = ak.to_dataframe(tree.arrays(library="ak", filter_name=branches))
+        pt_col  = f"{prefix}_pt"
+        eta_col = f"{prefix}_eta"
+        m = (df_cl[pt_col] > pt_min) & (df_cl[pt_col] <= pt_max)
+        if cl_cfg.get("eta_in_window", True):
+            m &= in_endcap_window(df_cl[eta_col], eta0, eta1)
+        out_cl[algo_name] = df_cl[m]
+    return df_gen_merged, out_cl
+
 def process_file(file_info):
+    file_path, bg_folder, tree_name, sample_key = file_info
     try:
-        file_path, bg_folder, tree_name = file_info
-        root_file = uproot.open(file_path)
-        tree = root_file[f"{bg_folder}/{tree_name}"]
-
-        # Load and filter gen and cl3d objects
-        df_gen, df_cl3d_Ref, df_cl3d_p0113, df_cl3d_p016, df_cl3d_p03, df_cl3d_p045 = load_and_filter_signal_tree(tree)
-
+        with uproot.open(file_path) as root_file:
+            tree = root_file[f"{bg_folder}/{tree_name}"]
+            df_gen, cl3d_dict = load_and_filter(tree, sample_key)
         print(f"Processed {file_path}")
-        return df_gen, df_cl3d_Ref, df_cl3d_p0113, df_cl3d_p016, df_cl3d_p03, df_cl3d_p045
-
+        return df_gen, cl3d_dict
     except Exception as e:
-        print(f"Error processing file {file_info[0]}: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        print(f"Error processing file {file_path}: {e}")
+        # return empty shells with correct structure
+        return pd.DataFrame(), {k: pd.DataFrame() for k in algos.keys()}
 
-# Function to process files in parallel
-def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, num_processes=20):
-    # Ensure output directory exists
-    import os
+def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, sample_key, num_processes=20):
     os.makedirs(output_dir, exist_ok=True)
-
-    # Read the file list
+    cfg = Sample_cfg[sample_key]
+    tag = cfg.get("tag", "filtered")
     with open(filelist_path, "r") as f:
-        file_list = [line.strip() for line in f.readlines()]
-
-    # Prepare file info tuples for multiprocessing
-    file_info_list = [(file_path, bg_folder, tree_name) for file_path in file_list]
-
-    # Use multiprocessing Pool for parallel processing
+        file_list = [line.strip() for line in f if line.strip()]
+    file_info_list = [(fp, bg_folder, tree_name, sample_key) for fp in file_list]
     with Pool(processes=num_processes) as pool:
         results = pool.map(process_file, file_info_list)
 
-    # Separate gen and cl3d DataFrames from results
-    gen_dfs, cl3d_Ref_dfs,  cl3d_p0113_dfs, cl3d_p016_dfs, cl3d_p03_dfs, cl3d_p045_dfs= zip(*results)
-
-    # Combine all the DataFrames into single ones
+    # combine gen
+    gen_dfs = [r[0] for r in results]
     combined_gen_df = pd.concat(gen_dfs, ignore_index=True)
-    combined_cl3d_Ref_df = pd.concat(cl3d_Ref_dfs, ignore_index=True)
-    combined_cl3d_p0113_df = pd.concat(cl3d_p0113_dfs, ignore_index=True)
-    combined_cl3d_p016_df = pd.concat(cl3d_p016_dfs, ignore_index=True)
-    combined_cl3d_p03_df = pd.concat(cl3d_p03_dfs, ignore_index=True)
-    combined_cl3d_p045_df = pd.concat(cl3d_p045_dfs, ignore_index=True)
 
-    # Save the combined DataFrames to output files
-    gen_output_path = f"{output_dir}/pionPU200_newalgogen_filtered.h5"
-    cl3d_Ref_output_path = f"{output_dir}/pionPU200_newalgocl3d_Ref_filtered.h5"
-    cl3d_p0113_output_path = f"{output_dir}/pionPU200_newalgocl3d_p0113_filtered.h5"
-    cl3d_p016_output_path = f"{output_dir}/pionPU200_newalgocl3d_p016_filtered.h5"
-    cl3d_p03_output_path = f"{output_dir}/pionPU200_newalgocl3d_p03_filtered.h5"
-    cl3d_p045_output_path = f"{output_dir}/pionPU200_newalgocl3d_p045_filtered.h5"
+    # combine cl3d per algo
+    combined_cl = {}
+    for algo in algos.keys():
+        algo_dfs = [r[1][algo] for r in results]
+        combined_cl[algo] = pd.concat(algo_dfs, ignore_index=True)
+
+    # save
+    base = f"{sample_key}_{tag}"
+    gen_output_path = os.path.join(output_dir, f"{base}_gen.h5")
     combined_gen_df.to_hdf(gen_output_path, key="gen", mode="w")
-    combined_cl3d_Ref_df.to_hdf(cl3d_Ref_output_path, key="cl3d_Ref", mode="w")
-    combined_cl3d_p0113_df.to_hdf(cl3d_p0113_output_path, key="cl3d_p0113", mode="w")
-    combined_cl3d_p016_df.to_hdf(cl3d_p016_output_path, key="cl3d_p016", mode="w")
-    combined_cl3d_p03_df.to_hdf(cl3d_p03_output_path, key="cl3d_p03", mode="w")
-    combined_cl3d_p045_df.to_hdf(cl3d_p045_output_path, key="cl3d_p045", mode="w")
 
-# Set the paths
-bg_folder = "l1tHGCalTriggerNtuplizer"
-tree_name = "HGCalTriggerNtuple"
-output_dir = "/data/data.polcms/cms/debnath/HGCAL/CMSSW_14_0_5/src/shower_shape_studies/samples"
+    for algo, df in combined_cl.items():
+        out_path = os.path.join(output_dir, f"{base}_cl3d_{algo}.h5")
+        df.to_hdf(out_path, key=f"cl3d_{algo}", mode="w")
 
-# Process the files in parallel (using 20 processes)
-process_files_parallel("filelists/pionsPU200_newalgo.txt", bg_folder, tree_name, output_dir, num_processes=30)
+    print("Saved:")
+    print("  ", gen_output_path)
+    for algo in algos.keys():
+        print("  ", os.path.join(output_dir, f"{base}_cl3d_{algo}.h5"))
+
+if __name__ == "__main__":
+    bg_folder = "l1tHGCalTriggerNtuplizer"
+    tree_name = "HGCalTriggerNtuple"
+    output_dir = "/data/data.polcms/cms/debnath/HGCAL/CMSSW_14_0_5/src/shower_shape_studies/samples"
+    sample_key = "photonPU200"
+    filelist = "filelists/photonPU200_newalgo.txt"
+
+    process_files_parallel(filelist_path=filelist, bg_folder=bg_folder, tree_name=tree_name, output_dir=output_dir, sample_key=sample_key, num_processes=50,)

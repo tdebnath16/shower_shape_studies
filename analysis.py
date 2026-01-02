@@ -28,7 +28,8 @@ def filter_by_delta_r(df, prefix, delta_r_threshold):
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"DataFrame must contain the following columns: {required_columns}")
     df = df.copy()
-    #df = df[df['cl3d_ienergy'] > 0]
+    m_sign = (((df[f"{prefix}_eta"] * df["genpart_exeta"]) > 0.0))#ensure +EE or -EE
+    df = df[m_sign]
     df['delta_r'] = delta_r(df[f"{prefix}_eta"], df[f"{prefix}_phi"], df['genpart_exeta'], df['genpart_exphi'])
     df_filtered = df[df['delta_r'] < delta_r_threshold]
     df_sorted = df_filtered.sort_values(by=['event', f"{prefix}_energy", 'delta_r'], ascending=[True, False, True])
