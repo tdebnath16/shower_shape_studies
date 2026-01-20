@@ -5,6 +5,7 @@ import pandas as pd
 from multiprocessing import Pool
 import analysis as ana
 import os
+import argparse as arg
 
 algos = {
     "Ref":   "cl3d_Ref",
@@ -23,7 +24,7 @@ cl3d_columns = [
 cl3d_hw_columns = [
     "hw_e", "hw_e_em", "hw_eta", "hw_phi", "hw_showerLength", "hw_coreShowerLength",
     "hw_firstLayer", "hw_lastLayer", "hw_sigma_roz", "hw_sigma_eta", "hw_sigma_z", "hw_sigma_phi",
-    "hw_hoe", "hw_z", "hw_fractionInCE_E", "hw_fractionInCoreCE_E", "hw_fractionInEarlyCE_E",
+    "hw_hoe", "hw_z", "hw_fractionInCE_E", "hw_fractionInCoreCE_E", "hw_fractionInEarlyCE_E", '_hw_nTC',
 ]
 Sample_cfg = {
     "photonPU200": {
@@ -158,7 +159,7 @@ def load_and_filter(tree, sample_key: str):
         df_cl = ak.to_dataframe(tree.arrays(library="ak", filter_name=branches))
         pt_col  = f"{prefix}_pt"
         eta_col = f"{prefix}_eta"
-        m = (df_cl[pt_col] > pt_min) & (df_cl[pt_col] <= pt_max)
+        m = (df_cl[pt_col] > pt_min)
         if cl_cfg.get("eta_in_window", True):
             m &= in_endcap_window(df_cl[eta_col], eta0, eta1)
         out_cl[algo_name] = df_cl[m]
@@ -211,11 +212,22 @@ def process_files_parallel(filelist_path, bg_folder, tree_name, output_dir, samp
     for algo in algos.keys():
         print("  ", os.path.join(output_dir, f"{base}_cl3d_{algo}.h5"))
 
-if __name__ == "__main__":
-    bg_folder = "l1tHGCalTriggerNtuplizer"
-    tree_name = "HGCalTriggerNtuple"
-    output_dir = "/data/data.polcms/cms/debnath/HGCAL/CMSSW_14_0_5/src/shower_shape_studies/samples"
-    sample_key = "PU200"
-    filelist = "filelists/PU200_newalgo.txt"
+def main():
+    parser = arg.ArgumentParser(description="Filter HGCAL ntuples and dump to HDF5.")
+    parser.add_argument("--sample", "-s", required=True, choices=list(Sample_cfg.keys()), help="Sample key to process (must exist in Sample_cfg).")
+    parser.add_argument("--filelist", "-f", default='filelists/PU200_newalgo.txt', help="Path to filelist txt (one ROOT file path per line).")
+    parser.add_argument("--bg-folder", default="l1tHGCalTriggerNtuplizer")
+    parser.add_argument("--tree-name", default="HGCalTriggerNtuple")
+    parser.add_argument("--outdir", "-o", default="/data/data.polcms/cms/debnath/HGCAL/CMSSW_14_0_5/src/shower_shape_studies/samples", help="Output directory for HDF5 files.")
+    parser.add_argument("--nproc", "-j", type=int, default=20, help="Number of worker processes.")
+    args = parser.parse_args()
+    filelist = args.filelist
+    print("\nConfig:")
+    print("  sample   =", args.sample)
+    print("  filelist =", filelist)
+    print("  outdir   =", args.outdir)
+    print("  nproc    =", args.nproc)
+    process_files_parallel(filelist_path=filelist, bg_folder=args.bg_folder, tree_name=args.tree_name, output_dir=args.outdir, sample_key=args.sample, num_processes=args.nproc)
 
-    process_files_parallel(filelist_path=filelist, bg_folder=bg_folder, tree_name=tree_name, output_dir=output_dir, sample_key=sample_key, num_processes=50,)
+if __name__ == "__main__":
+    main()

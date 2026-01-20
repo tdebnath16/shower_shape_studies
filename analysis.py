@@ -15,6 +15,7 @@ from sklearn.datasets import make_hastie_10_2
 from pandas.api.types import is_integer_dtype
 import logging
 import sys
+import mplhep as mh
 
 def delta_r(eta1, phi1, eta2, phi2):
     delta_eta = np.abs(eta1 - eta2)
@@ -22,19 +23,43 @@ def delta_r(eta1, phi1, eta2, phi2):
     delta_phi = np.where(delta_phi > np.pi, 2 * np.pi - delta_phi, delta_phi)  # Adjust phi to be within [-pi, pi]
     return np.sqrt(delta_eta**2 + delta_phi**2)
 
-def filter_by_delta_r(df, prefix, delta_r_threshold):
-    """Filter DataFrame to keep only the highest-energy match per event within the delta R threshold."""
-    required_columns = [f"{prefix}_eta", f"{prefix}_phi", 'genpart_exeta', 'genpart_exphi', f"{prefix}_energy", 'event']
+def filtering(df, prefix, thr):
+    df=df.copy()
+    df['delta_r'] = delta_r(df[rf"cl3d_{prefix}_eta"], df[rf"cl3d_{prefix}_phi"], df['gen_eta'], df['gen_phi'])
+    df = df[df['delta_r'] <=thr]
+    df = (df.sort_values(by=["event", f"cl3d_{prefix}_energy"],ascending=[True, False] ))  # event fixed, energy high → low).reset_index(drop=True
+    eta_cl = df[rf"cl3d_{prefix}_eta"]
+    eta_ref = df[rf"gen_eta"]   # change if needed
+    mask = (eta_cl * eta_ref) > 0   # same sign (both + or both -)
+    df = df.loc[mask].reset_index(drop=True)
+    df = df.sort_values(["event", "genpart_gen", f'cl3d_{prefix}_energy'], ascending=[True, True, False])
+    df = df.drop_duplicates(subset=["event", "genpart_gen"], keep="first")
+    df = (df.sort_values(["event", f'cl3d_{prefix}_energy'], ascending=[True, False]).groupby("event", as_index=False).head(2).reset_index(drop=True))
+    return df
+
+def filtering_photon(df, prefix, thr):
+    required_columns = [f"cl3d_{prefix}_eta", f"cl3d_{prefix}_phi", "genpart_exeta", "genpart_exphi", f"cl3d_{prefix}_energy", "event", "gen_pt",]
     if not all(col in df.columns for col in required_columns):
         raise ValueError(f"DataFrame must contain the following columns: {required_columns}")
     df = df.copy()
-    m_sign = (((df[f"{prefix}_eta"] * df["genpart_exeta"]) > 0.0))#ensure +EE or -EE
+    df['delta_r'] = delta_r(df[rf"cl3d_{prefix}_eta"], df[rf"cl3d_{prefix}_phi"], df['genpart_exeta'], df['genpart_exphi'])
+    m_sign = (df[f"cl3d_{prefix}_eta"] * df["genpart_exeta"]) > 0.0
     df = df[m_sign]
-    df['delta_r'] = delta_r(df[f"{prefix}_eta"], df[f"{prefix}_phi"], df['genpart_exeta'], df['genpart_exphi'])
-    df_filtered = df[df['delta_r'] < delta_r_threshold]
-    df_sorted = df_filtered.sort_values(by=['event', f"{prefix}_energy", 'delta_r'], ascending=[True, False, True])
-    df_best_match = df_sorted.groupby('event').first().reset_index()
-    return df_best_match
+    # build per-row ΔR threshold
+    if prefix in ["Ref", "p0113Tri", "p016Tri"]:
+        dr_thr = thr
+        m_dr = df["delta_r"] < dr_thr
+    elif prefix in [ "p03Tri", "p045Tri"]:
+        # gen-eta dependent
+        dr_thr_arr = np.where(df["genpart_exeta"].to_numpy() > 2.4, 0.1, 0.20)
+        m_dr = df["delta_r"].to_numpy() < dr_thr_arr
+    else:
+        raise ValueError(f"Unknown prefix '{prefix}' for ΔR threshold rules")
+    df_filtered = df[m_dr]
+    df = df.sort_values(["event", "genpart_gen", f'cl3d_{prefix}_energy'], ascending=[True, True, False])
+    df = df.drop_duplicates(subset=["event", "genpart_gen"], keep="first")
+    df = (df.sort_values(["event", f'cl3d_{prefix}_energy'], ascending=[True, False]).groupby("event", as_index=False).head(2).reset_index(drop=True))
+    return df
 
 # Function to load and filter the tree data (for ROOT file)
 def load_and_filter_tree(tree, filter_pt = 20, eta_range=(1.6, 2.8), cl_pt_threshold=5):
@@ -502,4 +527,723 @@ def plot_across_five_lists(
         print(f"Saved: {out}")
         plt.show()
         plt.close()
+def curves_eff_vs_dr_in_2d_bins(
+    df,
+    prefix,
+    eta_bins,
+    pt_bins,
+    dr_vals,
+    use_abs_eta=True,
+    gen_eta_col="gen_eta",
+    gen_pt_col="gen_pt",
+    outpath="eff_vs_deltaR_by_genEta_genPt.png",
+    cms_label="Preliminary",
+    com=14,
+    legend_ncol=2,
+    legend_fontsize=12,
+):
+    """
+    Makes ONE plot: efficiency vs ΔR curves.
+    Each curve corresponds to a 2D bin: (eta_bin, pt_bin).
+    Efficiency = N_pass / N_total using unique (event, genpart_gen).
+    """
+    # storage: eff_map[ieta, ipt, idr]
+    eff_map = np.full((len(eta_bins)-1, len(pt_bins)-1, len(dr_vals)), np.nan, dtype=float)
+    n0_map  = np.zeros((len(eta_bins)-1, len(pt_bins)-1), dtype=int)
 
+    # precompute arrays
+    eta = df[gen_eta_col].to_numpy()
+    pt  = df[gen_pt_col].to_numpy()
+    eta_sel = np.abs(eta) if use_abs_eta else eta
+
+    for ieta in range(len(eta_bins)-1):
+        elo, ehi = eta_bins[ieta], eta_bins[ieta+1]
+
+        m_eta = (eta_sel >= elo) & (eta_sel < ehi)
+
+        for ipt in range(len(pt_bins)-1):
+            plo, phi = pt_bins[ipt], pt_bins[ipt+1]
+
+            m_pt = (pt >= plo) & (pt < phi)
+            df_bin = df.loc[m_eta & m_pt]
+
+            n0 = df_bin.drop_duplicates(pair_cols).shape[0]
+            n0_map[ieta, ipt] = n0
+            if n0 == 0:
+                continue
+
+            for idr, dr in enumerate(dr_vals):
+                df_cut = filtering(df_bin, prefix, dr)  # <-- YOUR function
+                n_pass = df_cut.drop_duplicates(pair_cols).shape[0]
+                eff_map[ieta, ipt, idr] = n_pass / n0
+
+    # ---- plot curves (same representation as yours)
+    plt.figure(figsize=(12, 8))
+
+    for ieta in range(len(eta_bins)-1):
+        elo, ehi = eta_bins[ieta], eta_bins[ieta+1]
+        for ipt in range(len(pt_bins)-1):
+            plo, phi = pt_bins[ipt], pt_bins[ipt+1]
+
+            n0 = n0_map[ieta, ipt]
+            if n0 == 0:
+                continue
+
+            y = eff_map[ieta, ipt, :]
+            # label includes BOTH bins
+            if use_abs_eta:
+                lab = rf"${elo:g}\leq |\eta^{{gen}}|<{ehi:g},\ {plo:g}\leq p_T^{{gen}}<{phi:g}$ (N={n0})"
+            else:
+                lab = rf"${elo:g}\leq \eta^{{gen}}<{ehi:g},\ {plo:g}\leq p_T^{{gen}}<{phi:g}$ (N={n0})"
+
+            plt.plot(dr_vals, y, marker="o", linewidth=1.8, label=lab)
+
+    plt.xlabel(r"$\Delta R$ threshold")
+    plt.ylabel(r"$\epsilon$ (matched / gen)")
+    plt.ylim(0, 1.05)
+
+    plt.legend(ncol=legend_ncol, fontsize=16, frameon=True)
+    mh.cms.label(cms_label, data=False, com=com)
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=200)
+    plt.show()
+
+def run_all_triangles_curves_2d(
+    dfs, eta_bins, pt_bins, dr_vals,
+    outdir="eff_vs_deltaR_2Dbins",
+    use_abs_eta=True,
+):
+    os.makedirs(outdir, exist_ok=True)
+
+    for label, (df, prefix) in dfs.items():
+        curves_eff_vs_dr_in_2d_bins(
+            df=df,
+            prefix=prefix,
+            eta_bins=eta_bins,
+            pt_bins=pt_bins,
+            dr_vals=dr_vals,
+            use_abs_eta=use_abs_eta,
+            outpath=os.path.join(outdir, f"eff_vs_deltaR_by_eta_pt_{label}.png"),
+            legend_ncol=2,
+            legend_fontsize=11,
+        )
+def wrap_phi(phi):
+    return (phi + np.pi) % (2*np.pi) - np.pi
+
+def _col(template, Prefix):
+    return template.format(Prefix=Prefix)
+
+def _bin_label(slice_var, lo, hi):
+    if slice_var == "eta":
+        return rf"{lo:.2f}<absEtaGen<{hi:.2f}"
+    if slice_var == "pt":
+        return rf"{lo:.0f}<ptGen<{hi:.0f}"
+    if slice_var == "phi":
+        return rf"{lo:.2f}<phiGen<{hi:.2f}"
+    return rf"{lo}<x<{hi}"
+
+def binned_mean_sem(x, y, bins):
+    x = np.asarray(x); y = np.asarray(y)
+    m = np.isfinite(x) & np.isfinite(y)
+    x, y = x[m], y[m]
+
+    ib = np.digitize(x, bins) - 1
+    nb = len(bins) - 1
+    xc = 0.5 * (np.asarray(bins[:-1]) + np.asarray(bins[1:]))
+
+    mean = np.full(nb, np.nan)
+    sem  = np.full(nb, np.nan)
+    n    = np.zeros(nb, dtype=int)
+
+    for b in range(nb):
+        yy = y[ib == b]
+        n[b] = yy.size
+        if yy.size:
+            mean[b] = np.mean(yy)
+            sem[b]  = (np.std(yy, ddof=1) / np.sqrt(yy.size)) if yy.size > 1 else 0.0
+    return xc, mean, sem, n
+
+
+
+def plot_response_hists_one_by_one(
+    dfs,                         # dict: label -> (df, Prefix)
+    slice_var,                   # "eta" | "pt" | "phi"
+    slice_bins,                  # edges for that variable
+    gen_eta_col="genpart_exeta",
+    gen_pt_col="gen_pt",
+    gen_phi_col="genpart_exphi",
+    pt_reco_col="cl3d_{Prefix}_pt",
+    # optional global selections (applied in addition to slice)
+    ptgen_sel=None,              # e.g. (20, 100)
+    etagen_sel=None,             # e.g. (1.6, 2.8) on abs(eta)
+    phigen_sel=None,             # e.g. (-pi, pi) on wrapped phi
+    # histogram settings
+    nbins=60,
+    yscale="log",
+    density=False,
+    weights_col=None,
+    # labels / output
+    outdir="resp_hists",
+    tag="",
+    cms_label="Preliminary",
+    right_label="PU200 photons",
+    xlabel=r"$p_T^{reco}/p_T^{gen}$",
+):
+    os.makedirs(outdir, exist_ok=True)
+
+    slice_bins = np.asarray(slice_bins)
+    for i in range(len(slice_bins) - 1):
+        lo, hi = slice_bins[i], slice_bins[i+1]
+
+        fig, ax = plt.subplots(figsize=(12,8))
+
+        for lab, (df, Prefix) in dfs.items():
+            pt_col = _col(pt_reco_col, Prefix)
+            if pt_col not in df.columns:
+                print(f"[WARN] {lab}: missing {pt_col}, skipping")
+                continue
+
+            eta = df[gen_eta_col].to_numpy()
+            ptg = df[gen_pt_col].to_numpy()
+            phi = wrap_phi(df[gen_phi_col].to_numpy())
+            ptr = df[pt_col].to_numpy()
+
+            m = np.isfinite(eta) & np.isfinite(ptg) & np.isfinite(phi) & np.isfinite(ptr)
+
+            # global selections
+            if ptgen_sel is not None:
+                m &= (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+            if etagen_sel is not None:
+                m &= (np.abs(eta) >= etagen_sel[0]) & (np.abs(eta) < etagen_sel[1])
+            if phigen_sel is not None:
+                m &= (phi >= phigen_sel[0]) & (phi < phigen_sel[1])
+
+            # slice selection
+            if slice_var == "eta":
+                m &= (np.abs(eta) >= lo) & (np.abs(eta) < hi)
+                bin_text = rf"${lo:.2f} < |\eta^{{gen}}| < {hi:.2f}$"
+            elif slice_var == "pt":
+                m &= (ptg >= lo) & (ptg < hi)
+                bin_text = rf"${lo:.0f} < p_T^{{gen}} < {hi:.0f}\ \mathrm{{GeV}}$"
+            elif slice_var == "phi":
+                m &= (phi >= lo) & (phi < hi)
+                bin_text = rf"${lo:.2f} < \phi^{{gen}} < {hi:.2f}$"
+            else:
+                raise ValueError("slice_var must be 'eta', 'pt', or 'phi'")
+
+            if not np.any(m):
+                continue
+
+            resp = ptr[m] / ptg[m]
+            w = None
+            if weights_col is not None:
+                w = df.loc[m, weights_col].to_numpy()
+
+            ax.hist(
+                resp,
+                bins=nbins,
+                histtype="step",
+                linewidth=1.8,
+                density=density,
+                weights=w,
+                label=lab,
+            )
+
+        ax.set_yscale(yscale)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Counts" if not density else "A.U.")
+        ax.grid(True, alpha=0.25)
+
+        mh.cms.label(cms_label, data=False, rlabel=r"$14~\mathrm{TeV},\ \langle PU\rangle=200$")
+
+        ax.legend(frameon=True, loc="upper right")
+        fig.tight_layout()
+
+        fname = f"resp_{slice_var}_{_bin_label(slice_var, lo, hi)}{tag}.png"
+        fig.savefig(os.path.join(outdir, fname), bbox_inches="tight")
+        plt.show()
+        plt.close(fig)
+
+def plot_delta_vs_gen(
+    dfs,                          # dict: label -> (df, Prefix)
+    which="eta",                  # "eta" or "phi"
+    gen_eta_col="genpart_exeta",
+    gen_phi_col="genpart_exphi",
+    reco_eta_col="cl3d_{Prefix}_eta",
+    reco_phi_col="cl3d_{Prefix}_phi",
+    eta_bins=np.linspace(1.6, 2.8, 10),
+    phi_bins=np.linspace(-np.pi, np.pi, 7),
+    ptgen_sel=None,               # optional (lo,hi) on gen_pt
+    gen_pt_col="gen_pt",
+    outpath=None,
+    cms_label="Preliminary",
+):
+    fig, ax = plt.subplots(figsize=(12,8))
+
+    for lab, (df, Prefix) in dfs.items():
+        if which == "eta":
+            x = df[gen_eta_col].to_numpy()
+            reco_col = _col(reco_eta_col, Prefix)
+            if reco_col not in df.columns:
+                print(f"[WARN] {lab}: missing {reco_col}, skipping")
+                continue
+            y = abs(df[reco_col].to_numpy() - x)
+            bins = np.asarray(eta_bins)
+            xlabel = r"$\eta^{gen}$"
+            ylabel = r"$\Delta\eta  = |\eta^{reco} - \eta^{gen}$|"
+            #hline = 0.0
+
+        elif which == "phi":
+            x = wrap_phi(df[gen_phi_col].to_numpy())
+            reco_col = _col(reco_phi_col, Prefix)
+            if reco_col not in df.columns:
+                print(f"[WARN] {lab}: missing {reco_col}, skipping")
+                continue
+            y = wrap_phi(df[reco_col].to_numpy() - df[gen_phi_col].to_numpy())
+            bins = np.asarray(phi_bins)
+            xlabel = r"$\phi^{gen}$"
+            ylabel = r"$\Delta\phi = (\phi^{reco}-\phi^{gen})$"
+            #hline = 0.0
+        else:
+            raise ValueError("which must be 'eta' or 'phi'")
+
+        m = np.isfinite(x) & np.isfinite(y)
+
+        if ptgen_sel is not None:
+            ptg = df[gen_pt_col].to_numpy()
+            m &= np.isfinite(ptg) & (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+
+        xc, ym, ye, n = binned_mean_sem(x[m], y[m], bins)
+        ok = np.isfinite(ym)
+        ax.errorbar(xc[ok], ym[ok], yerr=ye[ok], fmt="o", ms=5, capsize=2, label=lab)
+
+    #ax.axhline(hline, lw=1)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.25)
+
+    mh.cms.label(cms_label, data=False, rlabel=r"$14~\mathrm{TeV},\ \langle PU\rangle=200$")
+    ax.legend(frameon=True)
+
+    fig.tight_layout()
+    if outpath:
+        fig.savefig(outpath, bbox_inches="tight")
+    plt.show()
+    
+def binned_rms_and_err(x, y, bins):
+    x = np.asarray(x); y = np.asarray(y)
+    m = np.isfinite(x) & np.isfinite(y)
+    x, y = x[m], y[m]
+
+    bins = np.asarray(bins)
+    nb = len(bins) - 1
+    xc = 0.5 * (bins[:-1] + bins[1:])
+    xerr = 0.5 * (bins[1:] - bins[:-1])
+
+    rms = np.full(nb, np.nan)
+    er  = np.full(nb, np.nan)
+    n   = np.zeros(nb, dtype=int)
+
+    ib = np.digitize(x, bins) - 1
+    for b in range(nb):
+        yy = y[ib == b]
+        n[b] = yy.size
+        if yy.size >= 2:
+            # RMS around mean (i.e. standard deviation)
+            s = np.std(yy, ddof=1)
+            rms[b] = s
+            # approx error on std (Gaussian assumption)
+            er[b] = s / np.sqrt(2*(yy.size - 1))
+        elif yy.size == 1:
+            rms[b] = 0.0
+            er[b] = np.nan
+    return xc, xerr, rms, er, n
+
+def plot_sigma_delta_vs_gen(
+    dfs,                           # dict: label -> (df, Prefix)
+    which="phi",                   # "eta" or "phi"
+    # gen columns
+    gen_eta_col="genpart_exeta",
+    gen_phi_col="genpart_exphi",
+    gen_pt_col="gen_pt",
+    # reco columns templates
+    reco_eta_col="cl3d_{Prefix}_eta",
+    reco_phi_col="cl3d_{Prefix}_phi",
+    # binning
+    eta_bins=np.linspace(1.6, 2.8, 13),          # for |eta|
+    phi_bins=np.linspace(-np.pi, np.pi, 13),     # for phi
+    use_abs_eta=True,
+    # selection
+    ptgen_sel=(20, 100),
+    # cosmetics
+    ylabel_eta=r"$\sigma(\Delta\eta)$",
+    ylabel_phi=r"$\sigma(\Delta\phi)$",
+    cms_label="Preliminary",
+    right_label="PU200 photons",
+    outpath=None,
+):
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    for lab, (df, Prefix) in dfs.items():
+        if which == "eta":
+            reco_col = _col(reco_eta_col, Prefix)
+            if reco_col not in df.columns:
+                print(f"[WARN] {lab}: missing {reco_col}, skipping")
+                continue
+            eta_gen = df[gen_eta_col].to_numpy()
+            eta_rec = df[reco_col].to_numpy()
+            x = np.abs(eta_gen) if use_abs_eta else eta_gen
+            y = eta_rec - eta_gen
+            bins = np.asarray(eta_bins)
+            xlabel = r"$|\eta^{gen}|$" if use_abs_eta else r"$\eta^{gen}$"
+            ylabel = ylabel_eta
+
+        elif which == "phi":
+            reco_col = _col(reco_phi_col, Prefix)
+            if reco_col not in df.columns:
+                print(f"[WARN] {lab}: missing {reco_col}, skipping")
+                continue
+            phi_gen = wrap_phi(df[gen_phi_col].to_numpy())
+            phi_rec = wrap_phi(df[reco_col].to_numpy())
+            x = phi_gen
+            y = wrap_phi(phi_rec - phi_gen)
+            bins = np.asarray(phi_bins)
+            xlabel = r"$\phi^{gen}$"
+            ylabel = ylabel_phi
+
+        else:
+            raise ValueError("which must be 'eta' or 'phi'")
+
+        ptg = df[gen_pt_col].to_numpy()
+        m = np.isfinite(x) & np.isfinite(y) & np.isfinite(ptg)
+        if ptgen_sel is not None:
+            m &= (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+
+        xc, xerr, sig, sigerr, n = binned_rms_and_err(x[m], y[m], bins)
+        ok = np.isfinite(sig)
+
+        ax.errorbar(
+            xc[ok], sig[ok],
+            xerr=xerr[ok], yerr=sigerr[ok],
+            fmt="s", ms=5, capsize=2,
+            label=lab
+        )
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.3)
+
+    mh.cms.label(cms_label, data=False, rlabel=r"$14~\mathrm{TeV},\ \langle PU\rangle=200$")
+    ax.legend(frameon=True)
+
+    fig.tight_layout()
+    if outpath:
+        fig.savefig(outpath, bbox_inches="tight")
+    plt.show()
+
+def binned_stats(x, y, bins):
+    x = np.asarray(x); y = np.asarray(y)
+    m = np.isfinite(x) & np.isfinite(y)
+    x, y = x[m], y[m]
+
+    bins = np.asarray(bins)
+    nb = len(bins) - 1
+    xc   = 0.5 * (bins[:-1] + bins[1:])
+    xerr = 0.5 * (bins[1:]  - bins[:-1])
+
+    mu  = np.full(nb, np.nan)
+    mue = np.full(nb, np.nan)
+    sig = np.full(nb, np.nan)
+    sige= np.full(nb, np.nan)
+    rel = np.full(nb, np.nan)
+    rele= np.full(nb, np.nan)
+    n   = np.zeros(nb, dtype=int)
+
+    ib = np.digitize(x, bins) - 1
+    for b in range(nb):
+        yy = y[ib == b]
+        n[b] = yy.size
+        if yy.size >= 2:
+            m0 = np.mean(yy)
+            s0 = np.std(yy, ddof=1)
+
+            mu[b]  = m0
+            sig[b] = s0
+
+            # errors
+            mue[b]  = s0 / np.sqrt(yy.size)                 # SEM
+            sige[b] = s0 / np.sqrt(2*(yy.size - 1))         # error on std (approx)
+
+            if np.isfinite(m0) and m0 != 0:
+                rel[b] = s0 / m0
+                rele[b] = rel[b] * np.sqrt((sige[b]/s0)**2 + (mue[b]/m0)**2)
+        elif yy.size == 1:
+            mu[b] = yy[0]
+            sig[b] = 0.0
+
+    return xc, xerr, mu, mue, sig, sige, rel, rele, n
+
+def plot_ptresp_metric_vs(
+    dfs,                            # dict: label -> (df, Prefix)
+    xvar="pt",                      # "pt" | "eta" | "phi"
+    bins=None,
+    metric="mean",                  # "mean" | "sigma" | "rel"
+    # columns
+    gen_pt_col="gen_pt",
+    gen_eta_col="genpart_exeta",
+    gen_phi_col="genpart_exphi",
+    pt_reco_col="cl3d_{Prefix}_pt",
+    # selections
+    ptgen_sel=(20, 100),
+    abs_eta_range=None,             # e.g. (1.6, 2.8)
+    # cosmetics
+    cms_label="Preliminary",
+    right_label=r"$14~\mathrm{TeV},\ \langle PU\rangle=200$",
+    title=None,
+    outpath=None,
+    legend_loc="upper right",
+):
+    if bins is None:
+        raise ValueError("Provide 'bins'.")
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # axis labels
+    if xvar == "pt":
+        xlabel = r"$p_T^{gen}$ [GeV]"
+    elif xvar == "eta":
+        xlabel = r"$|\eta^{gen}|$"
+    elif xvar == "phi":
+        xlabel = r"$\phi^{gen}$"
+    else:
+        raise ValueError("xvar must be 'pt', 'eta', or 'phi'")
+
+    if metric == "mean":
+        ylabel = r"$\langle p_T^{cluster}/p_T^{gen}\rangle$"
+    elif metric == "sigma":
+        ylabel = r"$\sigma(p_T^{cluster}/p_T^{gen})$"
+    elif metric == "rel":
+        ylabel = r"$(\sigma/\mu)_{\mathrm{eff}}$"
+    else:
+        raise ValueError("metric must be 'mean', 'sigma', or 'rel'")
+
+    for lab, (df, Prefix) in dfs.items():
+        pt_col = _col(pt_reco_col, Prefix)
+        if pt_col not in df.columns:
+            print(f"[WARN] {lab}: missing {pt_col}, skipping")
+            continue
+
+        ptg  = df[gen_pt_col].to_numpy()
+        etag = df[gen_eta_col].to_numpy()
+        phig = wrap_phi(df[gen_phi_col].to_numpy())
+        ptr  = df[pt_col].to_numpy()
+
+        resp = ptr / ptg
+
+        m = np.isfinite(ptg) & np.isfinite(etag) & np.isfinite(phig) & np.isfinite(resp)
+
+        if ptgen_sel is not None:
+            m &= (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+        if abs_eta_range is not None:
+            m &= (np.abs(etag) >= abs_eta_range[0]) & (np.abs(etag) < abs_eta_range[1])
+
+        if xvar == "pt":
+            x = ptg
+        elif xvar == "eta":
+            x = np.abs(etag)
+        elif xvar == "phi":
+            x = phig
+
+        xc, xerr, mu, mue, sig, sige, rel, rele, n = binned_stats(x[m], resp[m], bins)
+
+        if metric == "mean":
+            y, ye = mu, mue
+        elif metric == "sigma":
+            y, ye = sig, sige
+        else:  # rel
+            y, ye = rel, rele
+
+        ok = np.isfinite(y)
+        ax.errorbar(
+            xc[ok], y[ok],
+            xerr=xerr[ok], yerr=ye[ok],
+            fmt="o", ms=5, capsize=2,
+            label=lab
+        )
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.grid(True, alpha=0.25)
+
+    mh.cms.label(cms_label, data=False, rlabel=right_label)
+    ax.legend(frameon=True, loc=legend_loc)
+
+    fig.tight_layout()
+    if outpath:
+        os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
+        fig.savefig(outpath, bbox_inches="tight")
+    plt.show()
+
+def plot_phi_bias_and_resolution_in_etabins(
+    dfs,                                # dict: label -> (df, Prefix)
+    eta_bins=np.linspace(1.6, 2.8, 13),  # bins in |etaGen|
+    gen_eta_col="genpart_exeta",
+    gen_phi_col="genpart_exphi",
+    gen_pt_col="gen_pt",
+    reco_phi_col="cl3d_{Prefix}_phi",
+    ptgen_sel=(20, 100),
+    cms_label="Preliminary",
+    right_label=r"$14~\mathrm{TeV},\ \langle PU\rangle=200$",
+    outdir="phi_in_etabins",
+    tag="",
+):
+    os.makedirs(outdir, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(12, 8))
+    for lab, (df, Prefix) in dfs.items():
+        reco_col = _col(reco_phi_col, Prefix)
+        if reco_col not in df.columns:
+            print(f"[WARN] {lab}: missing {reco_col}, skipping")
+            continue
+
+        etag = df[gen_eta_col].to_numpy()
+        phig = wrap_phi(df[gen_phi_col].to_numpy())
+        phir = wrap_phi(df[reco_col].to_numpy())
+        ptg  = df[gen_pt_col].to_numpy()
+
+        x = np.abs(etag)
+        dphi = wrap_phi(phir - phig)
+
+        m = np.isfinite(x) & np.isfinite(dphi) & np.isfinite(ptg)
+        if ptgen_sel is not None:
+            m &= (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+
+        xc, xerr, mu, mue, n = binned_mean_sem(x[m], dphi[m], eta_bins)
+        ok = np.isfinite(mu)
+        ax.errorbar(xc[ok], mu[ok], xerr=xerr[ok], yerr=mue[ok],
+                    fmt="o", ms=5, capsize=2, label=lab)
+    ax.set_xlabel(r"$|\eta^{gen}|$")
+    ax.set_ylabel(r"$\Delta\phi = |(\phi^{reco}-\phi^{gen})|$")
+    ax.set_xlim(eta_bins[0], eta_bins[-1])
+    ax.grid(True, alpha=0.25)
+    hep.cms.label(cms_label, data=False, rlabel=right_label)
+    ax.legend(frameon=True)
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, f"mean_dphi_vs_absEtaGen{tag}.png"), bbox_inches="tight")
+    plt.show()
+
+    #phi
+    fig, ax = plt.subplots(figsize=(12, 8))
+    for lab, (df, Prefix) in dfs.items():
+        reco_col = _col(reco_phi_col, Prefix)
+        if reco_col not in df.columns:
+            continue
+
+        etag = df[gen_eta_col].to_numpy()
+        phig = wrap_phi(df[gen_phi_col].to_numpy())
+        phir = wrap_phi(df[reco_col].to_numpy())
+        ptg  = df[gen_pt_col].to_numpy()
+
+        x = np.abs(etag)
+        dphi = wrap_phi(phir - phig)
+
+        m = np.isfinite(x) & np.isfinite(dphi) & np.isfinite(ptg)
+        if ptgen_sel is not None:
+            m &= (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+
+        xc, xerr, sig, sige, n = binned_rms_and_err(x[m], dphi[m], eta_bins)
+        ok = np.isfinite(sig)
+        ax.errorbar(xc[ok], sig[ok], xerr=xerr[ok], yerr=sige[ok],
+                    fmt="o", ms=5, capsize=2, label=lab)
+
+    ax.set_xlabel(r"$|\eta^{gen}|$")
+    ax.set_ylabel(r"$\sigma(\Delta\phi)$")
+    ax.set_xlim(eta_bins[0], eta_bins[-1])
+    ax.grid(True, alpha=0.25)
+    mh.cms.label(cms_label, data=False, rlabel=r"$14~\mathrm{TeV},\ \langle PU\rangle=200$")
+    ax.legend(frameon=True)
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, f"sigma_dphi_vs_absEtaGen{tag}.png"), bbox_inches="tight")
+    plt.show()
+
+def plot_eta_response_and_resolution_vs_ptgen(
+    dfs,                               # dict: label -> (df, Prefix)
+    pt_bins,                           # edges for ptgen bins
+    gen_pt_col="gen_pt",
+    gen_eta_col="genpart_exeta",
+    reco_eta_col="cl3d_{Prefix}_eta",
+    ptgen_sel=None,                    # optional extra selection (lo,hi)
+    abs_eta_range=None,                # optional selection in |etaGen|, e.g. (1.6,2.8)
+    cms_label="Preliminary",
+    right_label=r"$14~\mathrm{TeV},\ \langle PU\rangle=200$",
+    outdir="eta_vs_ptgen",
+    tag="",
+):
+    os.makedirs(outdir, exist_ok=True)
+    pt_bins = np.asarray(pt_bins)
+    # vs pt_gen
+    fig, ax = plt.subplots(figsize=(12, 8))
+    for lab, (df, Prefix) in dfs.items():
+        eta_col = _col(reco_eta_col, Prefix)
+        if eta_col not in df.columns:
+            print(f"[WARN] {lab}: missing {eta_col}, skipping")
+            continue
+
+        ptg  = df[gen_pt_col].to_numpy()
+        etag = df[gen_eta_col].to_numpy()
+        etar = df[eta_col].to_numpy()
+
+        dEta = etar - etag
+
+        m = np.isfinite(ptg) & np.isfinite(etag) & np.isfinite(dEta)
+        if ptgen_sel is not None:
+            m &= (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+        if abs_eta_range is not None:
+            m &= (np.abs(etag) >= abs_eta_range[0]) & (np.abs(etag) < abs_eta_range[1])
+
+        xc, xerr, mu, mue, n = binned_mean_sem(ptg[m], dEta[m], pt_bins)
+        ok = np.isfinite(mu)
+        ax.errorbar(xc[ok], mu[ok], xerr=xerr[ok], yerr=mue[ok],
+                    fmt="o", ms=5, capsize=2, label=lab)
+
+    ax.set_xlabel(r"$p_T^{gen}$ [GeV]")
+    ax.set_ylabel(r"$\langle \Delta\eta \rangle = \langle \eta^{reco}-\eta^{gen}\rangle$")
+    ax.grid(True, alpha=0.25)
+    mh.cms.label(cms_label, data=False, rlabel=right_label)
+    ax.legend(frameon=True)
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, f"mean_dEta_vs_ptGen{tag}.png"), bbox_inches="tight", dpi=200)
+    plt.show()
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(12, 8))
+    for lab, (df, Prefix) in dfs.items():
+        eta_col = _col(reco_eta_col, Prefix)
+        if eta_col not in df.columns:
+            continue
+
+        ptg  = df[gen_pt_col].to_numpy()
+        etag = df[gen_eta_col].to_numpy()
+        etar = df[eta_col].to_numpy()
+
+        dEta = etar - etag
+
+        m = np.isfinite(ptg) & np.isfinite(etag) & np.isfinite(dEta)
+        if ptgen_sel is not None:
+            m &= (ptg >= ptgen_sel[0]) & (ptg < ptgen_sel[1])
+        if abs_eta_range is not None:
+            m &= (np.abs(etag) >= abs_eta_range[0]) & (np.abs(etag) < abs_eta_range[1])
+
+        xc, xerr, sig, sige, n = binned_rms_and_err(ptg[m], dEta[m], pt_bins)
+        ok = np.isfinite(sig)
+        ax.errorbar(xc[ok], sig[ok], xerr=xerr[ok], yerr=sige[ok],
+                    fmt="o", ms=5, capsize=2, label=lab)
+
+    ax.set_xlabel(r"$p_T^{gen}$ [GeV]")
+    ax.set_ylabel(r"$\sigma(\Delta\eta)$")
+    ax.grid(True, alpha=0.25)
+    mh.cms.label(cms_label, data=False, rlabel=right_label)
+    ax.legend(frameon=True)
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, f"sigma_dEta_vs_ptGen{tag}.png"), bbox_inches="tight", dpi=200)
+    plt.show()
+    plt.close(fig)
